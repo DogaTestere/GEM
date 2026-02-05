@@ -8,6 +8,7 @@ import argparse
 import re
 import sqlite3
 import os
+import fcntl
 
 from datetime import datetime, timezone
 
@@ -81,6 +82,7 @@ def init_db(db_path):
     except sqlite3.DatabaseError:
         pass
 
+    # Original table for full KEGG entries
     cur.execute("""
     CREATE TABLE IF NOT EXISTS kegg_results (
         kegg_id TEXT PRIMARY KEY,
@@ -88,8 +90,30 @@ def init_db(db_path):
     )
     """)
 
+    # NEW: Cache individual reactions to prevent re-fetching
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reaction_cache (
+        reaction_id TEXT PRIMARY KEY,
+        equation TEXT,
+        compound_ids TEXT,
+        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # NEW: Cache individual compounds to prevent re-fetching across entries
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS compound_cache (
+        compound_id TEXT PRIMARY KEY,
+        formula TEXT,
+        exact_mass TEXT,
+        molecular_weight TEXT,
+        dblinks TEXT,
+        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     conn.commit()
-    return conn
+    return conn, db_path
 
 def kegg_is_complete(cur, kegg_id):
     # Read the payload as text and parse in Python to avoid relying on
@@ -108,12 +132,90 @@ def kegg_is_complete(cur, kegg_id):
     return payload.get("status") == "complete"
 
 
-def save_kegg_result(cur, conn, kegg_id, result):
+def save_kegg_result(cur, conn, kegg_id, result, lock_path):
+    """Save KEGG result with file locking to prevent corruption in parallel Nextflow runs."""
+    # Use advisory file locking - lightweight, no RAM overhead
+    lock_file_path = f"{lock_path}.lock"
+    
+    try:
+        # Open lock file (creates if doesn't exist)
+        lock_file = open(lock_file_path, 'w')
+        
+        # Acquire exclusive lock (blocks until available)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        
+        try:
+            cur.execute(
+                "INSERT OR REPLACE INTO kegg_results VALUES (?, ?)",
+                (kegg_id, json.dumps(result))
+            )
+            conn.commit()
+        finally:
+            # Release lock
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+    except Exception as e:
+        print(f"      ! WARNING: Lock error for {kegg_id}: {e}", file=sys.stderr)
+        # Fallback: try without lock
+        cur.execute(
+            "INSERT OR REPLACE INTO kegg_results VALUES (?, ?)",
+            (kegg_id, json.dumps(result))
+        )
+        conn.commit()
+
+
+def get_cached_reaction(cur, reaction_id):
+    """Retrieve cached reaction data if available."""
     cur.execute(
-        "INSERT OR REPLACE INTO kegg_results VALUES (?, ?)",
-        (kegg_id, json.dumps(result))
+        "SELECT equation, compound_ids FROM reaction_cache WHERE reaction_id = ?",
+        (reaction_id,)
+    )
+    row = cur.fetchone()
+    if row:
+        return {
+            "equation": row[0],
+            "cmpdID": json.loads(row[1]) if row[1] else []
+        }
+    return None
+
+
+def save_reaction_cache(cur, conn, reaction_id, rxn_data):
+    """Cache reaction data to avoid re-fetching."""
+    cur.execute(
+        "INSERT OR REPLACE INTO reaction_cache (reaction_id, equation, compound_ids) VALUES (?, ?, ?)",
+        (reaction_id, rxn_data["equation"], json.dumps(rxn_data["cmpdID"]))
     )
     conn.commit()
+
+
+def get_cached_compound(cur, compound_id):
+    """Retrieve cached compound metadata if available."""
+    cur.execute(
+        "SELECT formula, exact_mass, molecular_weight, dblinks FROM compound_cache WHERE compound_id = ?",
+        (compound_id,)
+    )
+    row = cur.fetchone()
+    if row:
+        return {
+            "formula": row[0],
+            "exact_mass": row[1],
+            "molecular_weight": row[2],
+            "dblinks": json.loads(row[3]) if row[3] else {}
+        }
+    return None
+
+
+def save_compound_cache(cur, conn, compound_id, metadata):
+    """Cache compound metadata to avoid re-fetching."""
+    if metadata is None:
+        return
+    cur.execute(
+        "INSERT OR REPLACE INTO compound_cache (compound_id, formula, exact_mass, molecular_weight, dblinks) VALUES (?, ?, ?, ?, ?)",
+        (compound_id, metadata.get("formula"), metadata.get("exact_mass"), 
+         metadata.get("molecular_weight"), json.dumps(metadata.get("dblinks", {})))
+    )
+    conn.commit()
+
 
 def kegg_request(endpoint, rate_limit=0.35, retries=5, backoff=1.5, last_time=[0]):
     url = f"{BASE_URL}{endpoint}"
@@ -284,19 +386,18 @@ def find_compounds(reactionPage):
     }
 
 
-def populate_kegg_compound(compound_id):
+def populate_kegg_compound(compound_id, cur, conn):
     """
     Fetch KEGG compound entry (Cxxxxx) and extract model-relevant fields.
-    FORMULA     C4H9NO3
-    EXACT_MASS  119.0582
-    MOL_WEIGHT  119.12
-    DBLINKS     CAS: 672-15-1
-            PubChem: 3561
-            ChEBI: 15699
-            KNApSAcK: C00001366
-            PDB-CCD: HSE
-            NIKKAJI: J9.199E
+    NOW WITH CACHING to prevent redundant requests across KEGG entries.
     """
+    # Check cache first
+    cached = get_cached_compound(cur, compound_id)
+    if cached:
+        print(f"        [CMPD] {compound_id} (cached)", file=sys.stderr)
+        return cached
+
+    # Not in cache, fetch from API
     page = kegg_request(f"/get/{compound_id}")
     if not page:
         return None
@@ -327,15 +428,20 @@ def populate_kegg_compound(compound_id):
             key, val = line.strip().split(":", 1)
             dblinks[key.strip()] = val.strip()
 
-    return {
+    metadata = {
         "formula": formula,
         "exact_mass": exact_mass,
         "molecular_weight": mol_weight,
         "dblinks": dblinks
     }
 
+    # Save to cache
+    save_compound_cache(cur, conn, compound_id, metadata)
+    
+    return metadata
 
-def fetch_kegg_entry(kegg_id):
+
+def fetch_kegg_entry(kegg_id, cur, conn):
     result = {
         "status": "incomplete",
         "KO_Terms": [],
@@ -391,20 +497,41 @@ def fetch_kegg_entry(kegg_id):
         result["reactions"][p] = rxns
         reactions.update(rxns)
 
-    print(f"    [REACTIONS] total {len(reactions)}", file=sys.stderr)
+    print(f"    [REACTIONS] total unique: {len(reactions)}", file=sys.stderr)
 
-    compound_cache = {}
-
+    # FIXED: Use in-memory cache for reactions within this entry,
+    # and check SQLite cache for reactions across different entries
+    reaction_data_cache = {}
+    
     for rn in reactions:
-        print(f"      [RXN] {rn}", file=sys.stderr)
-        rpage = kegg_request(f"/get/{rn}")
-        rxn_data = find_compounds(rpage)
-        result["compounds"][rn] = rxn_data
+        # Check SQLite cache first (persistent across entries)
+        cached_rxn = get_cached_reaction(cur, rn)
+        if cached_rxn:
+            print(f"      [RXN] {rn} (cached)", file=sys.stderr)
+            reaction_data_cache[rn] = cached_rxn
+        else:
+            # Not cached, fetch from API
+            print(f"      [RXN] {rn} (fetching)", file=sys.stderr)
+            rpage = kegg_request(f"/get/{rn}")
+            rxn_data = find_compounds(rpage)
+            reaction_data_cache[rn] = rxn_data
+            
+            # Save to SQLite cache
+            save_reaction_cache(cur, conn, rn, rxn_data)
 
+        # Store in result
+        result["compounds"][rn] = reaction_data_cache[rn]
+
+    # Compounds: Use in-memory cache within entry, SQLite cache across entries
+    compound_cache = {}
+    
+    for rn in reactions:
+        rxn_data = reaction_data_cache[rn]
+        
         for cid in rxn_data.get("cmpdID", []):
             if cid not in compound_cache:
-                print(f"        [CMPD] {cid}", file=sys.stderr)
-                compound_cache[cid] = populate_kegg_compound(cid)
+                # populate_kegg_compound now checks SQLite cache internally
+                compound_cache[cid] = populate_kegg_compound(cid, cur, conn)
 
     result["compound_metadata"] = compound_cache
     result["status"] = "complete"
@@ -429,18 +556,19 @@ def run_kegg_annotation(mapping_json, out_json, db_path):
 
     unique_kegg_ids = sorted(set(mapping.values()))
 
-    conn = init_db(db_path)
+    conn, lock_path = init_db(db_path)
     cur = conn.cursor()
 
     total = len(unique_kegg_ids)
     for i, kegg_id in enumerate(unique_kegg_ids, 1):
         if kegg_is_complete(cur, kegg_id):
+            print(f"[{i}/{total}] {kegg_id} (already complete)", file=sys.stderr)
             continue
 
         print(f"[{i}/{total}] Annotating {kegg_id}", file=sys.stderr)
 
-        result = fetch_kegg_entry(kegg_id)
-        save_kegg_result(cur, conn, kegg_id, result)
+        result = fetch_kegg_entry(kegg_id, cur, conn)
+        save_kegg_result(cur, conn, kegg_id, result, lock_path)
 
     # EXPORT SQLITE → JSON (single pass)
     cur.execute("SELECT kegg_id, payload FROM kegg_results")
