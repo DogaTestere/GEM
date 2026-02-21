@@ -1,49 +1,90 @@
 #!/usr/bin/env python3
 
 import json
+import sqlite3
 import argparse
 import sys
 
 from pathlib import Path
 from datetime import datetime, timezone
 
-def load_json(path: Path):
-    """
-    Load a JSON file safely.
-    """
-    try:
-        with path.open() as f:
-            return json.load(f)
-    except Exception as e:
-        sys.exit(f"[ERROR] Failed to load JSON file {path}: {e}")
+def connect_db(db_path):
+    return sqlite3.connect(db_path)
 
-def merge_annotations(parsed_genes: list,uniprot_to_kegg: dict,go_by_uniprot: dict,kegg_by_id: dict,) -> dict:
-    """
-    Merge gene records with GO annotations and KEGG data using UniProt_ID as key.
-    """
+def create_gene_table(conn):
+    cur = conn.cursor()
 
-    if not isinstance(parsed_genes, list):
-        raise TypeError("parsed_genes must be a list of gene objects")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS genes (
+        uniprot_id TEXT PRIMARY KEY,
+        gene_name TEXT,
+        protein_name TEXT,
+        ec_number TEXT
+    )
+    """)
 
-    merged = {}
+    conn.commit()
 
-    for gene in parsed_genes:
-        uniprot_id = gene.get("UniProt_ID")
+def insert_gene_data(conn, gene_json):
 
-        # UniProt_ID is the only valid join key
-        if not uniprot_id:
+    cur = conn.cursor()
+
+    for entry in gene_json:
+
+        uniprot = entry.get("UniProt_ID")
+        gene = entry.get("Gene")
+        protein = entry.get("Protein")
+        ec = entry.get("EC_Number")
+
+        if not uniprot:
             continue
 
-        kegg_id = uniprot_to_kegg.get(uniprot_id)
+        cur.execute("""
+            INSERT INTO genes (uniprot_id, gene_name, protein_name, ec_number)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(uniprot_id) DO UPDATE SET
+                gene_name=excluded.gene_name,
+                protein_name=excluded.protein_name,
+                ec_number=excluded.ec_number
+        """, (uniprot, gene, protein, ec))
 
-        merged[uniprot_id] = {
-            **gene,
-            "GO": go_by_uniprot.get(uniprot_id, []),
-            "KEGG_ID": kegg_id,
-            "KEGG": kegg_by_id.get(kegg_id) if kegg_id else None,
-        }
+    conn.commit()
 
-    return merged
+def main(args):
+
+    db_path = Path(args.kegg_db)
+    json_path = Path(args.parsed_json)
+
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    if not json_path.exists():
+        raise FileNotFoundError(f"Gene JSON not found: {json_path}")
+
+    with json_path.open("r", encoding="utf-8") as f:
+        gene_json = json.load(f)
+
+    conn = connect_db(db_path)
+
+    create_gene_table(conn)
+    insert_gene_data(conn, gene_json)
+
+    # ---- OPTIONAL GO ----
+    if args.go_json:
+        go_path = Path(args.go_json)
+
+        if not go_path.exists():
+            raise FileNotFoundError(f"GO JSON not found: {go_path}")
+
+        with go_path.open("r", encoding="utf-8") as f:
+            go_json = json.load(f)
+
+        print("GO JSON detected — currently not processed.")
+        # Future: insert_go_data(conn, go_json)
+
+    conn.close()
+
+    print("Gene metadata successfully added.")
 
 def write_versions():
     versions = {
@@ -55,41 +96,14 @@ def write_versions():
 
     with open("versions.yml", "w") as f:
         json.dump(versions, f, indent=2)
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Merge parsed genes, GO annotations, UniProt→KEGG mapping, and KEGG data"
-    )
-
-    parser.add_argument("--parsed_json", required=True, type=Path)
-    parser.add_argument("--mapping_json", required=True, type=Path)
-    parser.add_argument("--go_json", required=True, type=Path)
-    parser.add_argument("--kegg_json", required=True, type=Path)
-    parser.add_argument("--merged_json", required=True, type=Path)
-
+    
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--parsed_json", required=True)
+    parser.add_argument("--go_json", required=False)
+    parser.add_argument("--kegg_db", required=True)
     args = parser.parse_args()
 
-    parsed_genes = load_json(args.parsed_json)
-    uniprot_to_kegg = load_json(args.mapping_json)
-    go_by_uniprot = load_json(args.go_json)
-    kegg_by_id = load_json(args.kegg_json)
-
-    merged = merge_annotations(
-        parsed_genes=parsed_genes,
-        uniprot_to_kegg=uniprot_to_kegg,
-        go_by_uniprot=go_by_uniprot,
-        kegg_by_id=kegg_by_id,
-    )
-
-    if not isinstance(parsed_genes, list):
-        sys.exit("[ERROR] parsed_json must be a list of gene objects")
-
-    with args.merged_json.open("w") as f:
-        json.dump(merged, f, indent=2)
+    main(args)
 
     write_versions()
-
-
-if __name__ == "__main__":
-    main()

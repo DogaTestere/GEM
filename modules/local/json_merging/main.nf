@@ -1,6 +1,6 @@
 process JSON_MERGING {
     tag "${meta.id}"
-    label 'process_low'
+    label 'process_lowest'
     // irem bunu lowest yap sen
 
     conda "${moduleDir}/environment.yaml"
@@ -9,23 +9,23 @@ process JSON_MERGING {
         'docker.io/library/python:3.11.9' }"
 
     input:
-    tuple val(meta), path(parsed_json)
-    path(mapping_json)
-    path(go_json)
-    path(kegg_json)
+    tuple val(meta), path(parsed_json), path(go_json), path(kegg_db)
     path (python_script)
 
     output:
-    tuple val(meta), path("*_merged.json"), emit:merged
+    tuple val(meta), path("merge.ready"), emit:merge_finish
     path "versions.yml", emit: versions
+
+    // Only file being emitted is a dummy file, model creation needs to wait for sql database update
 
     script:
     """
     python3 ${python_script} \
         --parsed_json ${parsed_json} \
-        --mapping_json ${mapping_json} \
         --go_json ${go_json} \
-        --kegg_json ${kegg_json} \
-        --merged_json ${meta.id}_merged.json
+        --kegg_db ${params.kegg_cache}/${meta.id}.db
+
+    MERGE_CODE_HASH=`sha256sum ${python_script} | cut -d" " -f1`
+    echo "merge_code=\${MERGE_CODE_HASH}" > merge.ready
     """
 }

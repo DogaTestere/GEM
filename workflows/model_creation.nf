@@ -15,7 +15,6 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_mode
 
 include { GB_PARSER              } from "../modules/local/parser"
 include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
-include { GENERATE_MATRIX        } from "../modules/local/matrix"
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,16 +104,6 @@ workflow MODEL_CREATION {
     )
     ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.merged_json.collect{it[1]})
     // !TODO : Check how to add versions to this, all modules emit their own versions, workflow doesn't
-
-    //
-    // MODULE : S Matrix Creation
-    //
-
-    GENERATE_MATRIX(
-        WEB_REQUESTS.out.merged_json,
-        file(params.matrix_script)
-    )
-    ch_multiqc_files = ch_multiqc_files.mix(GENERATE_MATRIX.out.matrix_xlsx.collect{it[1]})
 
     //
     // WORKFLOW : Metabolic Model Creation

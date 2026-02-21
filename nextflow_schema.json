@@ -229,6 +229,34 @@
                 "show_hidden": {
                     "type": "boolean",
                     "description": "Display hidden parameters in the help message (only works when --help or --help_full are provided)."
+                },
+                "json_merging_script": {
+                    "type": "string",
+                    "description": "Path to JSON merging script"
+                },
+                "goTerm_script": {
+                    "type": "string",
+                    "description": "Path to GO term finder script"
+                },
+                "matrix_script": {
+                    "type": "string",
+                    "description": "Path to matrix generation script"
+                },
+                "mapping_script": {
+                    "type": "string",
+                    "description": "Path to UniProt ID mapping script"
+                },
+                "kegg_cache": {
+                    "type": "string",
+                    "description": "Path to KEGG cache directory"
+                },
+                "parser_script": {
+                    "type": "string",
+                    "description": "Path to GenBank parser script"
+                },
+                "kegg_requests_script": {
+                    "type": "string",
+                    "description": "Path to KEGG requests script"
                 }
             }
         }

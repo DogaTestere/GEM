@@ -32,10 +32,16 @@ workflow WEB_REQUESTS {
     kegg_requests_script = channel.fromPath(params.kegg_requests_script)
     KEGG_REQUESTS(UNIPROT_MAPPING.out.mapping, kegg_requests_script)
 
+    merged_input = gbk_ch
+        .join(GO_TERM_FINDER.out.go_terms)
+        .join(KEGG_REQUESTS.out.kegg_finish)
+        
     json_merging_script = channel.fromPath(params.json_merging_script)
-    JSON_MERGING(gbk_ch, UNIPROT_MAPPING.out.mapping, GO_TERM_FINDER.out.go_terms, KEGG_REQUESTS.out.kegg, json_merging_script) 
+    kegg_db_path = params.kegg_cache
+    
+    JSON_MERGING(merged_input, kegg_db_path, json_merging_script)
+    // KEGG db comes from params location. But there is a dummy file to ensure KEGG works before the json merge
 
   emit:
-    merged_json = JSON_MERGING.out.merged
+    merged_json = JSON_MERGING.out.merge_finish
     versions    = JSON_MERGING.out.versions
-}

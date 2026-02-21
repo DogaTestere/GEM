@@ -1,80 +1,46 @@
 #!/usr/bin/env python3
 
+import sqlite3  
+import os       
 import time
 import requests
 import sys
 import json
 import argparse
 import re
-import sqlite3
-import os
-import fcntl
 
+from pathlib import Path
 from datetime import datetime, timezone
 
 BASE_URL = "https://rest.kegg.jp"
 
-def init_db(db_path):
-    """Initialize (or open) the SQLite DB.
-
-    If a relative path is provided while running inside a Nextflow `work/`
-    directory, this function will prefer a persistent cache location so the
-    database survives Nextflow's work cleanup. It tries the following in
-    order and picks the first writable candidate:
-      - project root `./.cache/iumobg-model_creation`
-      - `$XDG_CACHE_HOME/iumobg-model_creation`
-      - `~/.cache/iumobg-model_creation`
-      - `/tmp/iumobg-model_creation`
+def open_kegg_db(db_path):
+    """
+    Creates or opens a SQLite database for KEGG information.
+    Refuses creation inside Nextflow work directory.
     """
 
-    db_path = os.path.expanduser(db_path)
+    db_path = Path(db_path).expanduser()
 
-    if not os.path.isabs(db_path):
-        cwd = os.getcwd()
-        project_root = None
-        sep_work = os.path.sep + 'work' + os.path.sep
-        if sep_work in cwd:
-            project_root = cwd.split(sep_work)[0]
+    if not db_path.is_absolute():
+        db_path = db_path.resolve()
 
-        candidates = []
-        if project_root:
-            candidates.append(os.path.join(project_root, '.cache', 'iumobg-model_creation'))
-        xdg = os.environ.get('XDG_CACHE_HOME')
-        if xdg:
-            candidates.append(os.path.join(xdg, 'iumobg-model_creation'))
-        home = os.path.expanduser('~')
-        if home and home not in ('/', ''):
-            candidates.append(os.path.join(home, '.cache', 'iumobg-model_creation'))
-        candidates.append(os.path.join('/tmp', 'iumobg-model_creation'))
+    # Prevent DB inside Nextflow work/
+    nxf_work = os.environ.get("NXF_WORK")
+    if nxf_work:
+        nxf_work = Path(nxf_work).resolve()
+        try:
+            db_path.relative_to(nxf_work)
+            raise RuntimeError(
+                f"Refusing to create persistent DB inside Nextflow work dir: {db_path}"
+            )
+        except ValueError:
+            pass
 
-        cache_base = None
-        for cand in candidates:
-            try:
-                os.makedirs(cand, exist_ok=True)
-                # verify writable
-                testfile = os.path.join(cand, '.write_test')
-                with open(testfile, 'w') as tf:
-                    tf.write('ok')
-                os.remove(testfile)
-                cache_base = cand
-                break
-            except Exception:
-                continue
-
-        if cache_base:
-            db_path = os.path.join(cache_base, db_path)
-        else:
-            db_path = os.path.abspath(db_path)
-    else:
-        db_path = os.path.abspath(db_path)
-
-    db_dir = os.path.dirname(db_path)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-
-    print(f"    [DB] using database at {db_path}", file=sys.stderr)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(db_path, timeout=30)
+
     cur = conn.cursor()
     try:
         cur.execute("PRAGMA journal_mode=WAL;")
@@ -82,140 +48,171 @@ def init_db(db_path):
     except sqlite3.DatabaseError:
         pass
 
-    # Original table for full KEGG entries
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS kegg_results (
-        kegg_id TEXT PRIMARY KEY,
-        payload TEXT NOT NULL
-    )
-    """)
+    return conn
 
-    # NEW: Cache individual reactions to prevent re-fetching
+
+def create_tables(conn):
+    cur = conn.cursor()
+
+    # --- Reactions ---
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS reaction_cache (
+    CREATE TABLE IF NOT EXISTS reactions (
         reaction_id TEXT PRIMARY KEY,
-        equation TEXT,
-        compound_ids TEXT,
-        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        reaction_name TEXT,
+        stoichiometry TEXT,
+        lower_bound REAL,
+        upper_bound REAL
     )
     """)
 
-    # NEW: Cache individual compounds to prevent re-fetching across entries
+    # --- Compounds ---
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS compound_cache (
+    CREATE TABLE IF NOT EXISTS compounds (
         compound_id TEXT PRIMARY KEY,
+        name TEXT,
         formula TEXT,
-        exact_mass TEXT,
-        molecular_weight TEXT,
-        dblinks TEXT,
-        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        dblinks TEXT
     )
+    """)
+
+    # --- Reaction-Compound map ---
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reaction_compounds (
+        reaction_id TEXT,
+        compound_id TEXT,
+        stoichiometry REAL,
+        PRIMARY KEY (reaction_id, compound_id)
+    )
+    """)
+
+    # ---Gene map ---
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gene_map (
+        uniprot_id TEXT,
+        kegg_id TEXT,
+        reaction_id TEXT,
+        PRIMARY KEY (uniprot_id, kegg_id, reaction_id)
+    )
+    """)
+
+    # --- Completion tracking ---
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS kegg_status (
+        kegg_id TEXT PRIMARY KEY,
+        completed INTEGER
+    )
+    """)
+
+    # ---------------- Indexes ----------------
+
+    # Fast lookup of reactions by ID
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reactions_id
+        ON reactions (reaction_id)
+    """)
+
+    # Fast lookup of compounds by ID
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_compounds_id
+        ON compounds (compound_id)
+    """)
+
+    # Fast lookup of reaction → compound mapping
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reaction_compounds_reaction
+        ON reaction_compounds (reaction_id)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reaction_compounds_compound
+        ON reaction_compounds (compound_id)
+    """)
+
+    # Fast lookup for gene-based queries
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gene_map_uniprot
+        ON gene_map (uniprot_id)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_gene_map_kegg
+        ON gene_map (kegg_id)
     """)
 
     conn.commit()
-    return conn, db_path
 
-def kegg_is_complete(cur, kegg_id):
-    # Read the payload as text and parse in Python to avoid relying on
-    # SQLite's JSON1 extension (may not be available in some environments).
+
+def is_kegg_completed(conn, kegg_id):
+    cur = conn.cursor()
     cur.execute(
-        "SELECT payload FROM kegg_results WHERE kegg_id = ?",
+        "SELECT completed FROM kegg_status WHERE kegg_id=?",
         (kegg_id,)
     )
     row = cur.fetchone()
-    if not row:
-        return False
-    try:
-        payload = json.loads(row[0])
-    except Exception:
-        return False
-    return payload.get("status") == "complete"
+    return row is not None and row[0] == 1
 
+def mark_kegg_completed(conn, kegg_id):
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR REPLACE INTO kegg_status (kegg_id, completed)
+        VALUES (?, 1)
+    """, (kegg_id,))
+    conn.commit()
 
-def save_kegg_result(cur, conn, kegg_id, result, lock_path):
-    """Save KEGG result with file locking to prevent corruption in parallel Nextflow runs."""
-    # Use advisory file locking - lightweight, no RAM overhead
-    lock_file_path = f"{lock_path}.lock"
-    
-    try:
-        # Open lock file (creates if doesn't exist)
-        lock_file = open(lock_file_path, 'w')
-        
-        # Acquire exclusive lock (blocks until available)
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        
-        try:
-            cur.execute(
-                "INSERT OR REPLACE INTO kegg_results VALUES (?, ?)",
-                (kegg_id, json.dumps(result))
-            )
-            conn.commit()
-        finally:
-            # Release lock
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            lock_file.close()
-    except Exception as e:
-        print(f"      ! WARNING: Lock error for {kegg_id}: {e}", file=sys.stderr)
-        # Fallback: try without lock
-        cur.execute(
-            "INSERT OR REPLACE INTO kegg_results VALUES (?, ?)",
-            (kegg_id, json.dumps(result))
-        )
-        conn.commit()
+def insert_reaction(conn, reaction_id, reaction_data):
+    cur = conn.cursor()
 
+    cur.execute("""
+        INSERT OR IGNORE INTO reactions
+        (reaction_id, reaction_name, lower_bound, upper_bound)
+        VALUES (?, ?, ?, ?)
+    """, (
+        reaction_id,
+        reaction_data["reaction_name"],
+        reaction_data["lower_bound"],
+        reaction_data["upper_bound"]
+    ))
 
-def get_cached_reaction(cur, reaction_id):
-    """Retrieve cached reaction data if available."""
-    cur.execute(
-        "SELECT equation, compound_ids FROM reaction_cache WHERE reaction_id = ?",
-        (reaction_id,)
-    )
-    row = cur.fetchone()
-    if row:
-        return {
-            "equation": row[0],
-            "cmpdID": json.loads(row[1]) if row[1] else []
-        }
-    return None
+    conn.commit()
 
+def insert_compound(conn, compound_id, compound_data):
+    cur = conn.cursor()
 
-def save_reaction_cache(cur, conn, reaction_id, rxn_data):
-    """Cache reaction data to avoid re-fetching."""
-    cur.execute(
-        "INSERT OR REPLACE INTO reaction_cache (reaction_id, equation, compound_ids) VALUES (?, ?, ?)",
-        (reaction_id, rxn_data["equation"], json.dumps(rxn_data["cmpdID"]))
-    )
+    cur.execute("""
+        INSERT OR IGNORE INTO compounds
+        (compound_id, name, formula, dblinks)
+        VALUES (?, ?, ?, ?)
+    """, (
+        compound_id,
+        compound_data["name"],
+        compound_data["formula"],
+        json.dumps(compound_data["dblinks"])
+    ))
+
+    conn.commit()
+
+def insert_reaction_compounds(conn, reaction_id, stoichiometry_dict):
+    cur = conn.cursor()
+
+    for compound_id, coeff in stoichiometry_dict.items():
+        cur.execute("""
+            INSERT OR REPLACE INTO reaction_compounds
+            (reaction_id, compound_id, stoichiometry)
+            VALUES (?, ?, ?)
+        """, (reaction_id, compound_id, coeff))
+
     conn.commit()
 
 
-def get_cached_compound(cur, compound_id):
-    """Retrieve cached compound metadata if available."""
-    cur.execute(
-        "SELECT formula, exact_mass, molecular_weight, dblinks FROM compound_cache WHERE compound_id = ?",
-        (compound_id,)
-    )
-    row = cur.fetchone()
-    if row:
-        return {
-            "formula": row[0],
-            "exact_mass": row[1],
-            "molecular_weight": row[2],
-            "dblinks": json.loads(row[3]) if row[3] else {}
-        }
-    return None
-
-
-def save_compound_cache(cur, conn, compound_id, metadata):
-    """Cache compound metadata to avoid re-fetching."""
-    if metadata is None:
-        return
-    cur.execute(
-        "INSERT OR REPLACE INTO compound_cache (compound_id, formula, exact_mass, molecular_weight, dblinks) VALUES (?, ?, ?, ?, ?)",
-        (compound_id, metadata.get("formula"), metadata.get("exact_mass"), 
-         metadata.get("molecular_weight"), json.dumps(metadata.get("dblinks", {})))
-    )
+def insert_gene_map(conn, uniprot_id, kegg_id, reaction_id):
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT OR IGNORE INTO gene_map
+        VALUES (?, ?, ?)
+    """, (uniprot_id, kegg_id, reaction_id))
     conn.commit()
 
+# --- KEGG API FETCHİNG ---
 
 def kegg_request(endpoint, rate_limit=0.35, retries=5, backoff=1.5, last_time=[0]):
     url = f"{BASE_URL}{endpoint}"
@@ -244,9 +241,9 @@ def kegg_request(endpoint, rate_limit=0.35, retries=5, backoff=1.5, last_time=[0
 
 def parse_page_entries(page, section):
     """
-        Searches the entry inside the provided page, returns the part of the searched section \n
-        page is the full page of the kegg request
-        """
+    Returns the whole page request with each section seperated
+    """
+
     if not page:
         return []
 
@@ -256,289 +253,377 @@ def parse_page_entries(page, section):
     indent = " " * 12
 
     for line in page.splitlines():
-        if line.startswith(section):
-            active = True
-            lines.append(line[len(section):].strip())
-        elif active and line.startswith(indent):
-            lines.append(line.strip())
+        # Section headers are always left-aligned, uppercase
+        if line and not line.startswith(" "):
+            if line.startswith(section):
+                active = True
+                # Section headers may have content on same line
+                content = line.replace(section, "", 1).strip()
+                if content:
+                    lines.append(content)
+            else:
+                # New section started; if we were reading ours, stop
+                if active:
+                    break
+                active = False
         elif active:
-            break
+            # Continuation lines start with indent
+            if line.startswith(indent):
+                lines.append(line[12:].rstrip())
 
     return lines
 
-def find_ko_numbers(pageResult):
+def find_brite_numbers(pageResult):
     """
-    ORTHOLOGY   K12524  bifunctional aspartokinase / homoserine dehydrogenase 1 [EC:2.7.2.4 1.1.1.3]
-    ^ Finds this in the page and gets the K12524 part.
+    Find BRITE part's numbers \n
+    Similar to find_ko_numbers() but with (ec\d{5})
+
+    Example page: \n
+    BRITE       KEGG Orthology (KO) [BR:ecc00001] \n
+    ... \n
+    Enzymes [BR:ecc01000] \n
+    ...
     """
-    koLines = parse_page_entries(pageResult, "ORTHOLOGY")
-    koID = []
+    brites = parse_page_entries(pageResult, "BRITE")
+    brite_ids = []
+    brite_regex = re.compile(r'([a-z]{3,5}\d{5})')
 
-    # Regex to find one or more K numbers
-    koRegex = re.compile(r'(K\d{5,})')
+    for line in brites:
+        # Find the first ID on the line
+        match = brite_regex.match(line)
+        if match:
+            brite_ids.append(match.group(1))
 
-    for line in koLines:
-        matches = koRegex.findall(line)
-        for ko in matches:
-            koID.append(f"KO:{ko}")
+    return brite_ids
 
-    return koID
 
 def find_full_brite(pageResult):
     """
-    BRITE       KEGG Orthology (KO) [BR:ecj00001]
-         09100 Metabolism
-          09105 Amino acid metabolism
-           00260 Glycine, serine and threonine metabolism
-                JW0001 (thrA)
-           00270 Cysteine and methionine metabolism
-            JW0001 (thrA)
-               00300 Lysine biosynthesis
-            JW0001 (thrA)
-              09110 Biosynthesis of other secondary metabolites
-           00261 Monobactam biosynthesis
-                JW0001 (thrA)
-        Enzymes [BR:ecj01000]
-         1. Oxidoreductases
-          1.1  Acting on the CH-OH group of donors
-           1.1.1  With NAD+ or NADP+ as acceptor
-            1.1.1.3  homoserine dehydrogenase
-             JW0001 (thrA)
-         2. Transferases
-          2.7  Transferring phosphorus-containing groups
-           2.7.2  Phosphotransferases with a carboxy group as acceptor
-            2.7.2.4  aspartate kinase
-             JW0001 (thrA)
-    ^ Finds this then just returns it
+    Finds the full BRITE section in the page (with the description) \n
+        BRITE       KEGG Orthology (KO) [BR:ecc00001] \n
+             09190 Not Included in Pathway or Brite \n
+              09191 Unclassified: metabolism \n
+               99980 Enzymes with EC numbers \n
+                c3299 (ygbL) \n
+            Enzymes [BR:ecc01000] \n
+             4. Lyases \n
+              4.1  Carbon-carbon lyases \n
+               4.1.1  Carboxy-lyases \n
+                4.1.1.104  3-dehydro-4-phosphotetronate decarboxylase \n
+                 c3299 (ygbL) \n
     """
-    briteResults = parse_page_entries(pageResult, "BRITE")
-    if not briteResults:
-        return "No BRITE section"
-        
-    return "\n".join(briteResults)
+    brites = parse_page_entries(pageResult, "BRITE")
+    return brites
 
-def find_brite_numbers(pageResult):
-    briteResults = parse_page_entries(pageResult, "BRITE")
-    if not briteResults:
-        return []
-        
-    briteID = []
-    briteRegex = re.compile(r"\[(BR:[a-z0-9]+)\]")
-
-    for line in briteResults:
-        matches = briteRegex.findall(line)
-        for brID in matches:
-            briteID.append(brID)
-
-    return briteID
-
-def find_pathways(pageResult):
+def find_pathways(pageResults):
     """
-    PATHWAY     ecj00260  Glycine, serine and threonine metabolism
-        ecj00261  Monobactam biosynthesis
-        ecj00270  Cysteine and methionine metabolism
-        ecj00300  Lysine biosynthesis
-        ecj01100  Metabolic pathways
-        ecj01110  Biosynthesis of secondary metabolites
-        ecj01120  Microbial metabolism in diverse environments
-        ecj01230  Biosynthesis of amino acids
-    ^ Finds this and then seperates the ecj... parts    
+    Searches the PATHWAY id and returns them. \n
 
-    Then returns the ecj part. No convertion to map happens here
+    Example: \n
+    PATHWAY     ecj00260  Glycine, serine and threonine metabolism \n
+                    ecj01100  Metabolic pathways \n
+                    ecj01110  Biosynthesis of secondary metabolites \n
+                    ecj01230  Biosynthesis of amino acids \n
+    
+    Returns the whole ecj... included parts
     """
-    pathwayResults = parse_page_entries(pageResult, "PATHWAY")
-    pathwayID = []
-    pathwayRegex = re.compile(r'([a-z]{3,5}\d{5})')
 
-    for line in pathwayResults:
-        # Find the first ID on the line
-        match = pathwayRegex.match(line)
+    pathways = parse_page_entries(pageResults, "PATHWAY")
+    pathway_ids = []
+
+    pathway_regex = re.compile(r'^([a-z]{3}\d{5})\b')
+
+    for line in pathways:
+        match = pathway_regex.match(line)
         if match:
-            pathwayID.append(f"path:{match.group(1)}") 
-    # Add 'path:' prefix for consistency, normally just map00260 works but other ones have br:, ko: etc.
-    # It was purely an aesthetic choice
+            pathway_ids.append(match.group(1))
 
-    return pathwayID
+    return pathway_ids
 
-def find_compounds(reactionPage):
+def find_org_pathways(pageResults):
     """
-    DEFINITION  ATP + L-Aspartate <=> ADP + 4-Phospho-L-aspartate
-    EQUATION    C00002 + C00049 <=> C00008 + C03082
-    parts
+    Searches the ecj... coded pathways to get the: \n
+    GENE        JW0001  thrA; fused aspartokinase I and homoserine dehydrogenase I [KO:K12524] [EC:2.7.2.4 1.1.1.3] \n
+    part.
 
-    Then sends them back as equation(DEFINITION) and cmpd_id(EQUATION)
+    Then returns the thrA part and KO:..... part \n
+    Returns list of dicts: \n
+    [ \n
+        {"gene": "thrA", "ko": "K12524"}, \n
+        ... \n
+    ]
     """
-    if not reactionPage:
-        return {
-            "equation": "N/A(ERROR)",
-            "cmpdID": [],
-        }
+    genes = parse_page_entries(pageResults, "GENE")
+    results = []
 
-    readableEQ = " ".join(parse_page_entries(reactionPage, "DEFINITION"))
-    cmpdEQ = " ".join(parse_page_entries(reactionPage, "EQUATION"))
+    ko_regex = re.compile(r'\[KO:(K\d{5})\]')
+    gene_regex = re.compile(r'^\S+\s+([^;]+)')
 
-    # Extract compound IDs like C00002
-    cmpd_ids = re.findall(r"C\d{5}", cmpdEQ)
+    for line in genes:
+        ko_match = ko_regex.search(line)
+        gene_match = gene_regex.search(line)
+
+        if ko_match and gene_match:
+            gene_name = gene_match.group(1).strip()
+            ko_id = ko_match.group(1)
+
+            results.append({
+                "gene": gene_name,
+                "ko": ko_id
+            })
+
+    return results
+
+def find_ko_rn_links(pageResults):
+    """
+    Reads the result of /link/rn/ko:Kxxxx and returns the rn:Rxxxx information \n
+    Example: \n
+        ko:K12524	rn:R00480 \n
+        ko:K12524	rn:R01773 \n
+        ko:K12524	rn:R01775 \n
+    """
+    if not pageResults:
+        return []
+
+    rn_ids = []
+    rn_regex = re.compile(r'rn:(R\d{5})')
+
+    for line in pageResults.splitlines():
+        match = rn_regex.search(line)
+        if match:
+            rn_ids.append(match.group(1))
+
+    rn_ids = list(dict.fromkeys(rn_ids))
+    return rn_ids
+
+def find_reactions(pageResults):
+    """
+    Reads get/rn:Rxxx page and finds \n
+    NAME        ATP:L-aspartate 4-phosphotransferase \n
+    DEFINITION  ATP + L-Aspartate <=> ADP + 4-Phospho-L-aspartate \n
+    EQUATION    C00002 + C00049 <=> C00008 + C03082 \n
+
+    It seperates the compund ids while preserving order. It also seperates the arrow indicator. \n
+    <= : Right side is reactants, saved as (-1000,0) \n
+    <=> : Left side is reactants, saved as (-1000,1000) \n
+    => : Left side is reactants, saved as (0,1000)
+    """
+
+    name = " ".join(parse_page_entries(pageResults, "NAME"))
+    equation = " ".join(parse_page_entries(pageResults, "EQUATION"))
+
+    reactants = []
+    products = []
+
+    # Determine bounds
+    if "<=>" in equation:
+        lower_bound, upper_bound = -1000.0, 1000.0
+        left, right = equation.split("<=>", 1)
+    elif "=>" in equation:
+        lower_bound, upper_bound = 0.0, 1000.0
+        left, right = equation.split("=>", 1)
+    elif "<=" in equation:
+        lower_bound, upper_bound = -1000.0, 0.0
+        right, left = equation.split("<=", 1)
+    else:
+        lower_bound, upper_bound = 0.0, 1000.0
+        left = equation
+        right = ""
+
+    react_dict, react_list = parse_side(left, -1)
+    prod_dict, prod_list = parse_side(right, +1)
+
+    stoichiometry = {**react_dict, **prod_dict}
+
+    # Preserve order + remove duplicates
+    reactants = list(dict.fromkeys(reactants))
+    products = list(dict.fromkeys(products))
 
     return {
-        "equation": readableEQ if readableEQ else "N/A",
-        "cmpdID": list(set(cmpd_ids)),
+        "reaction_name": name,
+        "reactants": react_list,
+        "products": prod_list,
+        "stoichiometry": stoichiometry,
+        "lower_bound": lower_bound,
+        "upper_bound": upper_bound
     }
 
+def parse_side(side, sign):
+    compounds = {}
+    ordered_ids = []
 
-def populate_kegg_compound(compound_id, cur, conn):
+    parts = side.split("+")
+    for part in parts:
+        part = part.strip()
+
+        match = re.match(r'(?:(\d+)\s*)?(C\d{5})', part)
+        if match:
+            coeff = int(match.group(1)) if match.group(1) else 1
+            cid = match.group(2)
+
+            compounds[cid] = sign * coeff
+            ordered_ids.append(cid)
+
+    return compounds, ordered_ids
+
+def find_compunds(pageResults):
     """
-    Fetch KEGG compound entry (Cxxxxx) and extract model-relevant fields.
-    NOW WITH CACHING to prevent redundant requests across KEGG entries.
+    Reads get/Cxxxx page and finds \n
+    NAME        ATP; \n
+                Adenosine 5'-triphosphate \n
+    FORMULA     C10H16N5O13P3 \n
+    ... \n
+    DBLINKS     CAS: 56-65-5 \n
+            PubChem: 3304 \n
+            ChEBI: 15422 \n
+            KNApSAcK: C00001491 \n
+            PDB-CCD: ATP \n
+            NIKKAJI: J10.680A \n
+    
+    It saves them as a list, in case of multiple names, only the first name is saved.
     """
-    # Check cache first
-    cached = get_cached_compound(cur, compound_id)
-    if cached:
-        print(f"        [CMPD] {compound_id} (cached)", file=sys.stderr)
-        return cached
+    names = parse_page_entries(pageResults, "NAME")
+    formula_lines = parse_page_entries(pageResults, "FORMULA")
+    dblinks_lines = parse_page_entries(pageResults, "DBLINKS")
 
-    # Not in cache, fetch from API
-    page = kegg_request(f"/get/{compound_id}")
-    if not page:
-        return None
+    compound_name = None
+    if names:
+        compound_name = names[0].split(";")[0].strip()
 
-    formula = None
-    exact_mass = None
-    mol_weight = None
+    formula = formula_lines[0] if formula_lines else None
+
     dblinks = {}
-
-    for line in page.splitlines():
-        if line.startswith("FORMULA"):
-            formula = line.replace("FORMULA", "").strip()
-
-        elif line.startswith("EXACT_MASS"):
-            exact_mass = line.replace("EXACT_MASS", "").strip()
-
-        elif line.startswith("MOL_WEIGHT"):
-            mol_weight = line.replace("MOL_WEIGHT", "").strip()
-
-        elif line.startswith("DBLINKS"):
-            # DBLINKS can span multiple indented lines
-            current = line.replace("DBLINKS", "").strip()
-            if current:
-                key, val = current.split(":", 1)
-                dblinks[key.strip()] = val.strip()
-
-        elif line.startswith(" " * 12) and ":" in line and dblinks:
-            key, val = line.strip().split(":", 1)
+    for line in dblinks_lines:
+        if ":" in line:
+            key, val = line.split(":", 1)
             dblinks[key.strip()] = val.strip()
 
-    metadata = {
+    return {
+        "name": compound_name,
         "formula": formula,
-        "exact_mass": exact_mass,
-        "molecular_weight": mol_weight,
         "dblinks": dblinks
     }
 
-    # Save to cache
-    save_compound_cache(cur, conn, compound_id, metadata)
-    
-    return metadata
+def fetch_kegg_results(kegg_id):
+    """
+    Calls other functions and organises the results.
+    """
+    ko_cache = {}
+    reaction_cache = {}
+    compound_cache = {}
 
-
-def fetch_kegg_entry(kegg_id, cur, conn):
-    result = {
-        "status": "incomplete",
-        "KO_Terms": [],
-        "pathways": [],
-        "BRITE": "N/A",
-        "BRITE_id": [],
-        "reactions": {},
-        "compounds": {},
-        "compound_metadata": {}
+    results = {
+        "BRITE_ids" : [],
+        "BRITE" : [],
+        "Pathway_ids" : [],
+        "Pathway_KOs" : [],
+        "Reaction_ids" : [],
+        "Reaction_results" : [],
+        "Compound_results" : [],
     }
 
-    print(f"    [ENTRY] fetching main page", file=sys.stderr)
+    print("[ENTRY-MAIN] Fetching main page", file=sys.stderr)
     page = kegg_request(f"/get/{kegg_id}")
     if not page:
-        print(f"    [ENTRY] FAILED main page", file=sys.stderr)
-        return result
+        print("[ENTRY-ERROR] Failed on page retrival", file=sys.stderr)
+        return results
+    
+    print("[ENTRY-BRITE] Finding BRITE information from main page", file=sys.stderr)
+    results["BRITE"] = find_full_brite(page)
+    results["BRITE_ids"] = find_brite_numbers(page)
 
-    print(f"    [KO] parsing ORTHOLOGY", file=sys.stderr)
-    result["KO_Terms"] = find_ko_numbers(page)
-
-    print(f"    [BRITE] parsing BRITE", file=sys.stderr)
-    result["BRITE"] = find_full_brite(page)
-    result["BRITE_id"] = find_brite_numbers(page)
-
-    print(f"    [PATHWAY] parsing PATHWAY", file=sys.stderr)
+    print("[ENTRY-PATH] Finding Pathway information from main page", file=sys.stderr)
     pathways = find_pathways(page)
-    result["pathways"] = pathways
-    print(f"    [PATHWAY] found {len(pathways)}", file=sys.stderr)
+    results["Pathway_ids"] = pathways
 
-    map_cache = {}
-    reactions = set()
+    # --- Pathway KO numbers ---
+    # {"gene": "thrA", "ko": "K12524"} for these
 
-    for p in pathways:
-        m = re.search(r"(\d{5})$", p)
-        if not m:
-            continue
+    all_KOs = []
 
-        map_id = f"map{m.group(1)}"
+    for pathway_id in pathways:
+        print(f"[PATH-MAIN] Fetching pathway page, id:{pathway_id}", file=sys.stderr)
+        pathway_page = kegg_request(f"/get/{pathway_id}")
+        if not pathway_page:
+            print(f"[PATH-ERROR] Fetching pathway page, id:{pathway_id}", file=sys.stderr)
 
-        if map_id not in map_cache:
-            print(f"    [MAP] {map_id} → reactions", file=sys.stderr)
-            links = kegg_request(f"/link/reaction/{map_id}")
-            if links:
-                map_cache[map_id] = [
-                    parts[1]
-                    for line in links.splitlines()
-                    if (parts := line.split("\t")) and len(parts) == 2
-                ]
-            else:
-                map_cache[map_id] = []
-
-        rxns = map_cache[map_id]
-        result["reactions"][p] = rxns
-        reactions.update(rxns)
-
-    print(f"    [REACTIONS] total unique: {len(reactions)}", file=sys.stderr)
-
-    # FIXED: Use in-memory cache for reactions within this entry,
-    # and check SQLite cache for reactions across different entries
-    reaction_data_cache = {}
+        print("[PATH-KO] Fetching KO ids", file=sys.stderr)
+        org_KOs = find_org_pathways(pathway_page)
+        for item in org_KOs:
+            ko_id = item["ko"]
+            if ko_id not in all_KOs:
+                all_KOs.append(ko_id)
     
-    for rn in reactions:
-        # Check SQLite cache first (persistent across entries)
-        cached_rxn = get_cached_reaction(cur, rn)
-        if cached_rxn:
-            print(f"      [RXN] {rn} (cached)", file=sys.stderr)
-            reaction_data_cache[rn] = cached_rxn
+    results["Pathway_KOs"] = all_KOs
+
+    # --- KO ---> RN_ID transformation ---
+    # ko:K12524	rn:R00480 for these
+
+    all_rns = []
+
+    for ko_id in all_KOs:
+        if ko_id in ko_cache:
+            rn_ids = ko_cache[ko_id]
         else:
-            # Not cached, fetch from API
-            print(f"      [RXN] {rn} (fetching)", file=sys.stderr)
-            rpage = kegg_request(f"/get/{rn}")
-            rxn_data = find_compounds(rpage)
-            reaction_data_cache[rn] = rxn_data
-            
-            # Save to SQLite cache
-            save_reaction_cache(cur, conn, rn, rxn_data)
+            print(f"[KO-MAIN] Fetching ko-rn page, id:{ko_id}", file=sys.stderr)
+            ko_page = kegg_request(f"/link/rn/ko:{ko_id}")
 
-        # Store in result
-        result["compounds"][rn] = reaction_data_cache[rn]
-
-    # Compounds: Use in-memory cache within entry, SQLite cache across entries
-    compound_cache = {}
-    
-    for rn in reactions:
-        rxn_data = reaction_data_cache[rn]
+            print("[KO-LINK] Fetching reaction ids", file=sys.stderr)
+            rn_ids = find_ko_rn_links(ko_page)
+            ko_cache[ko_id] = rn_ids
         
-        for cid in rxn_data.get("cmpdID", []):
-            if cid not in compound_cache:
-                # populate_kegg_compound now checks SQLite cache internally
-                compound_cache[cid] = populate_kegg_compound(cid, cur, conn)
+        for rn_id in rn_ids:
+            if rn_id not in all_rns:
+                all_rns.append(rn_id)
+    
+    # --- Reaction info ---
+    # DEFINITION  ATP + L-Aspartate <=> ADP + 4-Phospho-L-aspartate for these
+    all_comp = set()
 
-    result["compound_metadata"] = compound_cache
-    result["status"] = "complete"
+    for rn_id in all_rns:
+        if rn_id in reaction_cache:
+            reaction_info = reaction_cache[rn_id]
+        else:
+            print(f"[RN-MAIN] Fetching reaction page, id:{rn_id}")
+            rn_page = kegg_request(f"/get/{rn_id}")
+            if not rn_page:
+                continue
 
-    print(f"    [DONE] {kegg_id}", file=sys.stderr)
-    return result
+            reaction_info = find_reactions(rn_page)
+            reaction_cache[rn_id] = reaction_info
 
+        reaction_info_with_id = {
+            "reaction_id": rn_id,
+            **reaction_info
+        }
+
+        results["Reaction_results"].append(reaction_info_with_id)
+
+        for comp in reaction_info["reactants"] + reaction_info["products"]:
+            all_comp.add(comp)
+
+    # --- Compound info ---
+    # FORMULA     C10H16N5O13P3 for these
+
+    for comp_id in all_comp:
+        if comp_id in compound_cache:
+            comp_info = compound_cache[comp_id]
+        else:
+            print(f"[COMP-MAIN] Fetching compund page, id:{comp_id}")
+            comp_page = kegg_request(f"/get/{comp_id}")
+            if not comp_page:
+                continue
+
+            comp_info = find_compunds(comp_page)
+            compound_cache[comp_id] = comp_info
+
+        results["Compound_results"].append({
+            "compound_id": comp_id,
+            **comp_info
+        })
+
+    return results
+    
 def write_versions():
     versions = {
         "json_merging": {
@@ -550,50 +635,74 @@ def write_versions():
     with open("versions.yml", "w") as f:
         json.dump(versions, f, indent=2)
 
-def run_kegg_annotation(mapping_json, out_json, db_path):
+def run_db_kegg_fetch(mapping_json, db_path):
+    """
+    Reads a mapping json file like the following: \n
+    "A0A0H2VA12": "ecc:c3299", \n
+    "A0A0H2VA68": "ecc:c3297", \n
+    "A0A0H2VDN9": "ecc:c5321", \n
+    Right side is UniProt id, left side is kegg_ids \n
+
+    Then checks the db, if there is no db or info is missing it runs fetch_kegg_results() to complete it.
+    Returns just the db
+    """
     with open(mapping_json) as f:
         mapping = json.load(f)
 
-    unique_kegg_ids = sorted(set(mapping.values()))
+    # ---------------- Connect DB ----------------
+    with open(mapping_json) as f:
+        mapping = json.load(f)
 
-    conn, lock_path = init_db(db_path)
-    cur = conn.cursor()
+    conn = open_kegg_db(db_path)
+    create_tables(conn)
 
-    total = len(unique_kegg_ids)
-    for i, kegg_id in enumerate(unique_kegg_ids, 1):
-        if kegg_is_complete(cur, kegg_id):
-            print(f"[{i}/{total}] {kegg_id} (already complete)", file=sys.stderr)
+    # ---------------- Process each UniProt ----------------
+    for uniprot_id, kegg_id in mapping.items():
+
+        print(f"[MAIN] Processing {uniprot_id} -> {kegg_id}",
+              file=sys.stderr)
+
+        if is_kegg_completed(conn, kegg_id):
+            print("   → Already completed. Skipping.",
+                  file=sys.stderr)
             continue
 
-        print(f"[{i}/{total}] Annotating {kegg_id}", file=sys.stderr)
+        # Fetch from KEGG
+        kegg_data = fetch_kegg_results(kegg_id)
 
-        result = fetch_kegg_entry(kegg_id, cur, conn)
-        save_kegg_result(cur, conn, kegg_id, result, lock_path)
+        # ---------------- Store reactions ----------------
+        for reaction in kegg_data["Reaction_results"]:
 
-    # EXPORT SQLITE → JSON (single pass)
-    cur.execute("SELECT kegg_id, payload FROM kegg_results")
-    rows = cur.fetchall()
+            reaction_id = reaction["reaction_id"]
 
-    results = {
-        kegg_id: json.loads(payload)
-        for kegg_id, payload in rows
-    }
+            insert_reaction(conn, reaction_id, reaction)
 
-    with open(out_json, "w") as f:
-        json.dump(results, f, indent=2)
+            insert_reaction_compounds(conn, reaction_id, reaction["stoichiometry"])
+
+            insert_gene_map(conn, uniprot_id, kegg_id, reaction_id)
+
+        # ---------------- Store compounds ----------------
+        for compound in kegg_data["Compound_results"]:
+            insert_compound(
+                conn,
+                compound["compound_id"],
+                compound
+            )
+
+        mark_kegg_completed(conn, kegg_id)
 
     conn.close()
+
+    return db_path
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mapping_json", required=True)
-    parser.add_argument("--out_json", required=True)
     parser.add_argument("--db", required=True)
     args = parser.parse_args()
 
-    run_kegg_annotation(
+    run_db_kegg_fetch(
         mapping_json=args.mapping_json,
-        out_json=args.out_json,
         db_path=args.db,
     )
 
