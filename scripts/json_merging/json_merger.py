@@ -4,6 +4,7 @@ import json
 import sqlite3
 import argparse
 import sys
+import shutil
 
 from pathlib import Path
 from datetime import datetime, timezone
@@ -102,8 +103,15 @@ if __name__ == "__main__":
     parser.add_argument("--parsed_json", required=True)
     parser.add_argument("--go_json", required=False)
     parser.add_argument("--kegg_db", required=True)
+    parser.add_argument("--added_db", required=True)
     args = parser.parse_args()
+    
+    input_db = Path(args.kegg_db)
+    output_db = Path(args.added_db)
 
+    shutil.copy(input_db, output_db)
+    conn = sqlite3.connect(output_db)
+    
     main(args)
 
     write_versions()

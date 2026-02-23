@@ -13,19 +13,15 @@ process JSON_MERGING {
     path (python_script)
 
     output:
-    tuple val(meta), path("merge.ready"), emit:merge_finish
+    tuple val(meta), path("*_merged.db"), emit:merged_db
     path "versions.yml", emit: versions
-
-    // Only file being emitted is a dummy file, model creation needs to wait for sql database update
 
     script:
     """
     python3 ${python_script} \
         --parsed_json ${parsed_json} \
         --go_json ${go_json} \
-        --kegg_db ${params.kegg_cache}/${meta.id}.db
-
-    MERGE_CODE_HASH=`sha256sum ${python_script} | cut -d" " -f1`
-    echo "merge_code=\${MERGE_CODE_HASH}" > merge.ready
+        --kegg_db ${kegg_db} \
+        --added_db ${meta.id}_merged.db
     """
 }

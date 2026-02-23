@@ -103,7 +103,7 @@ workflow MODEL_CREATION {
         GB_PARSER.out.parsing
     )
     ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.merged_json.collect{it[1]})
-    // !TODO : Check how to add versions to this, all modules emit their own versions, workflow doesn't
+    ch_versions = ch_versions.mix(WEB_REQUESTS.out.versions.first())
 
     //
     // WORKFLOW : Metabolic Model Creation

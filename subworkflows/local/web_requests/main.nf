@@ -1,18 +1,3 @@
-/*
-Needs to run the following
-PARSE_GBK (either in this workflow or as an addition to the annotation workflow, needs to run a python script)
-  └── gbk.json
-        ├── UNIPROT_KEGG(id_mapping stage)
-        │      └── mapping.json (kegg_stage)
-        │             ├── KEGG_PATHWAYS
-        │             ├── KEGG_REACTIONS
-        │             └── KEGG_KO
-        └── GO_MAPPING(go_terms stage)
-               └── go.json
-
-All of them needs to be merged into one giant .json file later, probably, i think sending one big file to parse is easier than sending multiple files to parse
-*/
-
 include { UNIPROT_MAPPING } from "../../../modules/local/uniprot"
 include { GO_TERM_FINDER  } from "../../../modules/local/gene_onthology"
 include { KEGG_REQUESTS   } from "../../../modules/local/kegg"
@@ -34,14 +19,12 @@ workflow WEB_REQUESTS {
 
     merged_input = gbk_ch
         .join(GO_TERM_FINDER.out.go_terms)
-        .join(KEGG_REQUESTS.out.kegg_finish)
+        .join(KEGG_REQUESTS.out.kegg_db)
         
     json_merging_script = channel.fromPath(params.json_merging_script)
-    kegg_db_path = params.kegg_cache
-    
-    JSON_MERGING(merged_input, kegg_db_path, json_merging_script)
-    // KEGG db comes from params location. But there is a dummy file to ensure KEGG works before the json merge
+    JSON_MERGING(merged_input, json_merging_script)
 
   emit:
-    merged_json = JSON_MERGING.out.merge_finish
+    merged_json = JSON_MERGING.out.merged_db
     versions    = JSON_MERGING.out.versions
+}
