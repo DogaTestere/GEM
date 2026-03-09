@@ -1,6 +1,6 @@
 process KEGG_REQUESTS {
     tag "${meta.id}"
-    label 'process_low'
+    label 'process_lowest'
 
     conda "${moduleDir}/environment.yaml"
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
@@ -8,7 +8,7 @@ process KEGG_REQUESTS {
         'docker.io/dogay/kegg-requests:3.11' }"
 
     input:
-    tuple val(meta), path(mapping_json)
+    tuple val(meta), path(parsed_json), path(mapping_json)
     path (python_script)
 
     output:
@@ -18,7 +18,14 @@ process KEGG_REQUESTS {
     script:
     """
     python3 ${python_script} \
-        --mapping_json ${mapping_json} \
-        --db ${meta.id}.db
+        --db ${meta.id}.db \
+        --parsed_json ${parsed_json} \
+        --kegg_map_json ${mapping_json} \
+        --manual_json ${params.manual_fixes}
+        
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        python: \$(python3 --version | sed 's/Python //')
+    END_VERSIONS
     """
 }

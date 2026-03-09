@@ -15,6 +15,7 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_mode
 
 include { GB_PARSER              } from "../modules/local/parser"
 include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
+include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -89,27 +90,32 @@ workflow MODEL_CREATION {
     // 
 
     GB_PARSER(
-        PROKKA.out.gbk, // tuple val(meta), path(genbank_file)
+        PROKKA.out.gbk,
         file(params.parser_script)
     )
-    ch_multiqc_files = ch_multiqc_files.mix(GB_PARSER.out.parsing.collect{it[1]})
-    ch_versions = ch_versions.mix(GB_PARSER.out.versions.first())
 
     // 
     // WORKFLOW : Web Requests to UniProt, KEGG and GO
     // 
 
     WEB_REQUESTS(
-        GB_PARSER.out.parsing
+        GB_PARSER.out.uni_first
     )
-    ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.merged_json.collect{it[1]})
-    ch_versions = ch_versions.mix(WEB_REQUESTS.out.versions.first())
+
+    ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.merged_db.collect{it[1]})
 
     //
     // WORKFLOW : Metabolic Model Creation
-    // 
+    //
 
-    // Put it here after writing it
+    MODEL_BUILDING(
+        WEB_REQUESTS.out.merged_db
+    )
+
+    ch_multiqc_files = ch_multiqc_files.mix(MODEL_BUILDING.out.finished_model.collect{it[1]})
+
+
+
 
     //
     // Collate and save software versions

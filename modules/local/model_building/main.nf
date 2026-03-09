@@ -1,26 +1,26 @@
-process GB_PARSER {
+process INITIAL_MODEL {
     tag "${meta.id}"
     label 'process_low'
 
     conda "${moduleDir}/environment.yaml"
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
         'https://depot.galaxyproject.org/singularity/python:3.11.9' :
-        'docker.io/dogay/gb-parser:3.11' }"
+        'docker.io/library/python:3.11.9' }"
 
     input:
-    tuple val(meta), path(gb_file)
-    path(python_script)
+    tuple val(meta), path(balanced_db)
+    path (python_script)
 
     output:
-    tuple val(meta), path("*_ec.json"), emit: ec_first
-    tuple val(meta), path("*_uni.json"), emit: uni_first
+    tuple val(meta), path("*_initial.xml"), emit:initial_model
     path "versions.yml", emit: versions
 
     script:
     """
     python3 ${python_script} \
-        --gb_file ${gb_file} \
-        --ec_out ${meta.id}_ec.json \
-        --uniprot_out ${meta.id}_uni.json
+        --model_objective ${meta.rxn_id} \
+        --model_direction ${meta.max_min} \
+        --balanced_db ${balanced_db} \
+        --output_model ${meta.id}_initial.xml
     """
 }
