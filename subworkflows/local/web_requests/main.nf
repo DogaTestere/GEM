@@ -1,7 +1,7 @@
 include { UNIPROT_MAPPING } from "../../../modules/local/uniprot"
 include { GO_TERM_FINDER  } from "../../../modules/local/gene_onthology"
 include { KEGG_REQUESTS   } from "../../../modules/local/kegg"
-include { JSON_MERGING    } from "../../../modules/local/json_merging"
+include { MANUAL_CHECKS   } from "../../../modules/local/database_fixes"
 
 workflow WEB_REQUESTS {
   take:
@@ -10,9 +10,9 @@ workflow WEB_REQUESTS {
   main:
     mapping_script = channel.fromPath(params.mapping_script)
     UNIPROT_MAPPING(gbk_ch, mapping_script) 
-
-    goTerm_script = channel.fromPath(params.goTerm_script)
-    GO_TERM_FINDER(gbk_ch, goTerm_script)
+    
+   goTerm_script = channel.fromPath(params.goTerm_script)
+   GO_TERM_FINDER(gbk_ch, goTerm_script)
 
     merged_kegg = gbk_ch
         .join(UNIPROT_MAPPING.out.mapping)
@@ -26,10 +26,11 @@ workflow WEB_REQUESTS {
         
     channel.fromPath(params.go_basic).set { go_basic_file }
         
-    json_merging_script = channel.fromPath(params.json_merging_script)
-    JSON_MERGING(merged_input, json_merging_script, go_basic_file)
+    db_fix_script = channel.fromPath(params.db_fix_script)
+    MANUAL_CHECKS(KEGG_REQUESTS.out.kegg_db, db_fix_script)
 
   emit:
-    merged_db = JSON_MERGING.out.merged_db
-    versions    = JSON_MERGING.out.versions
+    fixed_db = MANUAL_CHECKS.out.manual_fix
+    go_terms = GO_TERM_FINDER.out.go_terms
+    versions = MANUAL_CHECKS.out.versions
 }

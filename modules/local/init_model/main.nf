@@ -22,5 +22,10 @@ process INITIAL_MODEL {
         --model_direction ${meta.max_min} \
         --balanced_db ${balanced_db} \
         --output_model ${meta.id}_initial.xml
+        
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        python: \$(python3 --version | sed 's/Python //')
+    END_VERSIONS
     """
 }

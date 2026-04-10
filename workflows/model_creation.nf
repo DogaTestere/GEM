@@ -16,6 +16,7 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_mode
 include { GB_PARSER              } from "../modules/local/parser"
 include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
 include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
+include { REFERENCE_ASSEMBLY     } from "../subworkflows/local/ref_assembly"
 
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -31,58 +32,53 @@ workflow MODEL_CREATION {
     main:
     ch_reads = ch_samplesheet
         .map { meta, fastqs ->
-            def m = meta instanceof Map ? meta : [:]
-            // normalize keys coming from samplesheet plugin (e.g. 'RXN_ID' -> 'rxn_id')
+            def m = meta instanceof Map ? meta.clone() : [:]
             if (!m.containsKey('rxn_id') && m.containsKey('RXN_ID')) m.rxn_id = m['RXN_ID']
             if (!m.containsKey('max_min') && m.containsKey('MAX_MIN')) m.max_min = m['MAX_MIN']
-            if (!m.containsKey('sample') && m.containsKey('id')) m.sample = m.id
-            if (!m.containsKey('has_ref')) m.has_ref = false
+            if (!m.containsKey('sample') && m.containsKey('id'))       m.sample  = m.id
             if (!m.containsKey('single_end')) m.single_end = false
+
+            // Coerce has_ref to a real boolean regardless of input type
+            def rawRef = m.containsKey('has_ref') ? m.has_ref : false
+            m.has_ref = (rawRef instanceof Boolean) ? rawRef : rawRef.toString().trim().toLowerCase() == 'true'
+
+            // Attach optional ref_file path (may be null / empty string)
+            def rawRef_file = m.containsKey('ref_file') ? m.ref_file?.toString()?.trim() : ''
+            m.ref_file = (rawRef_file && rawRef_file != '') ? file(rawRef_file) : null
 
             tuple(m, fastqs.collect { file(it) })
         }
 
-    ch_versions = channel.empty()
+    ch_versions      = channel.empty()
     ch_multiqc_files = channel.empty()
 
-    //
-    // MODULE: Run FastQC
-    //
-    FASTQC(
-        ch_reads.map { meta, reads ->
-            tuple(meta, reads)
+    // FastQC 
+    FASTQC(ch_reads)
+    ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.collect { it[1] })
+    ch_versions      = ch_versions.mix(FASTQC.out.versions.first())
+
+    ch_reads
+        .branch { meta, reads ->
+            de_novo:    !meta.has_ref
+            reference:   meta.has_ref
+        }
+        .set { ch_branched }
+
+    // De-novo: SPAdes 
+    SPADES(ch_branched.de_novo)
+
+    // Reference assembly 
+    REFERENCE_ASSEMBLY(
+        ch_branched.reference.map { meta, reads ->
+            tuple(meta, reads, meta.ref_file)   
         }
     )
 
-    ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.collect{it[1]})
-    ch_versions = ch_versions.mix(FASTQC.out.versions.first())
 
-    // 
-    // MODULE: Spades Assembly 
-    // if there is no reference flag
-
-    ch_de_novo = ch_reads.filter { meta, reads -> !meta.has_ref }
-    
-    SPADES(
-        ch_de_novo.map { meta, reads ->
-            tuple(meta, reads)
-        }
-    )
-
-    //
-    // WORKFLOW : Reference Assembly 
-    // Should have bowtie_indexing --> bowtie_alignemnt --> samtools_sort --> samtools_index --> bcftools_call --> bcftools_index --> bcftools_concensus
-
-    ch_reference = ch_reads.filter { meta, reads -> meta.has_ref }
-
-    // !TODO : Add it here after downloading it from nf-core
-
-    //
-    // MODULE: Prokka Annotation
-    //
+    ch_contigs = SPADES.out.contigs.mix(REFERENCE_ASSEMBLY.out.contigs)
 
     PROKKA(
-        SPADES.out.contigs
+        ch_contigs
     )
 
     // 
@@ -95,26 +91,25 @@ workflow MODEL_CREATION {
     )
 
     // 
-    // WORKFLOW : Web Requests to UniProt, KEGG and GO
+    // WORKFLOW : Web Requests to UniProt and KEGG
     // 
 
     WEB_REQUESTS(
         GB_PARSER.out.uni_first
     )
 
-    ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.merged_db.collect{it[1]})
+    ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.fixed_db.collect{it[1]})
 
     //
     // WORKFLOW : Metabolic Model Creation
     //
 
     MODEL_BUILDING(
-        WEB_REQUESTS.out.merged_db
+        WEB_REQUESTS.out.fixed_db
+            .join(WEB_REQUESTS.out.go_terms)
     )
 
     ch_multiqc_files = ch_multiqc_files.mix(MODEL_BUILDING.out.finished_model.collect{it[1]})
-
-
 
 
     //

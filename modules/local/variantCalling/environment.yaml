@@ -1,0 +1,8 @@
+name: bcftools_call_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bcftools>=1.19
+  - samtools>=1.19

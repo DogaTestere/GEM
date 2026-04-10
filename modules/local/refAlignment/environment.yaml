@@ -1,0 +1,8 @@
+name: bowtie2_align_env
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bowtie2
+  - samtools>=1.17

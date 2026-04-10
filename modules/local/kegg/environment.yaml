@@ -1,8 +1,9 @@
 name: kegg_requests
 channels:
   - conda-forge
-  - defaults
+  - bioconda
 dependencies:
   - python=3.11
-  - requests
-  - tqdm
+  - pip
+  - pip:
+      - requests

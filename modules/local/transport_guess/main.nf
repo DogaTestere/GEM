@@ -1,7 +1,6 @@
-process JSON_MERGING {
+process GUESS_TRANSPORT {
     tag "${meta.id}"
     label 'process_lowest'
-    // irem bunu lowest yap sen
 
     conda "${moduleDir}/environment.yaml"
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
@@ -9,19 +8,24 @@ process JSON_MERGING {
         'docker.io/library/python:3.11.9' }"
 
     input:
-    tuple val(meta), path(parsed_json), path(go_json), path(kegg_db)
+    tuple val(meta), path(fixed_db), path (go_json)
     path (python_script)
 
     output:
-    tuple val(meta), path("*_merged.db"), emit:merged_db
+    tuple val(meta), path("*_guessed.db"), emit:guess_db
     path "versions.yml", emit: versions
 
     script:
     """
     python3 ${python_script} \
-        --parsed_json ${parsed_json} \
+        --input_db ${fixed_db} \
+        --go_obo ${params.go_basic} \
         --go_json ${go_json} \
-        --kegg_db ${kegg_db} \
-        --added_db ${meta.id}_merged.db
+        --output_db ${meta.id}_guessed.db
+        
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        python: \$(python3 --version | sed 's/Python //')
+    END_VERSIONS 
     """
 }
