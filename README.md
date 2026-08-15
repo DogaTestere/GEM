@@ -14,17 +14,22 @@
 
 ## Introduction
 
-**iumobg/model_creation** is a bioinformatics pipeline that converts raw FASTQ sequencing reads into a genome-scale metabolic model (GEM) and performs constraint-based simulations. The full pipeline conducts quality control, genome assembly(de novo or reference-guided) and annotation then integrates UniProt, GO and KEGG information to construct a CobraPy model.
+**iumobg/model_creation** is a bioinformatics pipeline that converts raw FASTQ sequencing reads into a genome-scale metabolic model (GEM) and performs constraint-based simulations. The full pipeline conducts quality control, genome assembly(de novo or reference-guided) and annotation(ab-inito or reference-based) then uses chosen database(currently BiGG, KEGG) to construct a GEM.
 
 <!-- TODO nf-core: Include a figure that guides the user through the major workflow steps. Many nf-core
      workflows use the "tube map" design for that. See https://nf-co.re/docs/guidelines/graphic_design/workflow_diagrams#examples for examples.   -->
 
-1. Read QC ([`FastQC`](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/))
-2. Adapter trimming ([`Cutadapt`](https://cutadapt.readthedocs.io/en/stable/))
-3. De Novo Assembly ([`SPAdes`](https://github.com/ablab/spades))
-4. Reference-guided assembly ([`Bowtie2`](https://bowtie-bio.sourceforge.net/bowtie2/)), ([`SAMtools`](https://www.htslib.org/)) and ([`BCFtools`](https://samtools.github.io/bcftools/))
-5. Annotation ([`Bakta`](https://bakta.readthedocs.io/)) and ([`Prodigal`](https://github.com/hyattpd/Prodigal))
-6. Custom python scripts using Biopython, openpyxl, bioservices
+1. Quality Control via [`FastQC`](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
+2. Genome Assembly
+2.a. De Novo Assembly via [`SPAdes`](https://github.com/ablab/spades)
+2.b. Reference-guided Assembly via [`Bowtie2`](https://bowtie-bio.sourceforge.net/bowtie2/), [`SAMtools`](https://www.htslib.org/) and [`BCFtools`](https://samtools.github.io/bcftools/)
+3. Genome Annotation
+3.a.1. Ab inito annotation for prokaryotes via Prodigal
+3.a.2. Database guided annotation for prokaryotes via miniprot
+3.b.1. Ab inito annotation for eukaryotes via GeneMark-ES
+3.b.2. Database guided annotation for eukaryotes via miniprot
+4. Database enrichment via python scripts : Currently defaults to KEGG, has options for BiGG and NCBI
+5. Model creation via CobraPy
 
 ## Usage
 
@@ -35,18 +40,21 @@ First, prepare a samplesheet with your input data that looks as follows:
 `samplesheet.csv`:
 
 ```csv
-sample,fastq_1,fastq_2,RXN_ID,max_min
-CONTROL_REP1,AEG588A1_S1_L002_R1_001.fastq.gz,AEG588A1_S1_L002_R2_001.fastq.gz,R02738,min
+sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,db_type
+SAMPLE1, ec1_S1_L001_R1_001.fastq.gz, ec1_S1_L001_R2_001.fastq.gz,true, e_coli_ref.fasta, pro, ref_in, KEGG
 ```
 Each row represents one biological sample.
 The columns are defined as follows:
 - `sample`: Unique sample identifier
-- `fastq_1`: FASTQ file for single-end reads or read 1 for paired-end data
-- `fastq_2`: FASTQ file for read 2 (leave empty for single-end data)
-- `RXN_ID`: KEGG reaction ID to be optimized in the metabolic model
-- `max_min`: Specify whether the reaction should be maximized or minimized
-> [!NOTE]
-> An optional reference genome (ref_genome) can be added as an additional column when performing reference-guided assembly.
+- `fastq_1`: FASTQ file for read 1 (File path)
+- `fastq_2`: FASTQ file for read 2 (File path)
+- `has_ref`: Whether the FASTQ file have a reference to use for assembly (Boolean)
+- `ref_file` : Reference file to be used in Reference-guided assembly (File Path)
+- `genome_type` : Identifier used for prokaryotes(pro) and eukaroytes(euk) (String)
+- `ann_type` : Whether ab initio(ab_in) or database guided annotation(ref_in) should be used (String)
+- `pep_accession` : RefSeq accession number that would be used for downloading the protein information from NCBI when guided annotation is used. (String)
+- `pep_file` : Protein information file path when guided annotation is used. (File Path)
+- `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has 'BiGG' and 'NCBI' options. (String)
 
 Now, you can run the pipeline using:
 

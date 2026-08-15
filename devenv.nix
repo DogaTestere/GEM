@@ -30,24 +30,24 @@ in
   packages = [
     nextflowPinned
     pkgs.docker-client 
-    pkgs.micromamba      
-    pkgs.python312       
+    pkgs.micromamba          
   ];
 
   scripts.hello.exec = ''
     echo hello from $GREET
   '';
 
+  languages.python = {
+    enable = true;
+    package = pkgs.python312;
+    venv = {
+      enable = true;
+      requirements = ./requirements.txt;
+     quiet = true;
+    };
+  };
+
   enterShell = ''
-    if [ ! -d .venv ]; then
-      python3 -m venv .venv
-    fi
-    source .venv/bin/activate
-
-    if [ -f requirements.txt ]; then
-      pip install -q -r requirements.txt
-    fi
-
     echo hello
     echo "  nextflow: $(nextflow -v 2>/dev/null | head -n1)"
     echo "  nf-core:  $(nf-core --version 2>/dev/null)"
