@@ -7,13 +7,19 @@ include { FASTQC                 } from '../modules/nf-core/fastqc/main'
 include { MULTIQC                } from '../modules/nf-core/multiqc/main'
 include { SPADES                 } from "../modules/nf-core/spades"
 include { PROKKA                 } from '../modules/nf-core/prokka/main' 
+include { MINIPROT_INDEX         } from '../modules/nf-core/miniprot/index/main' 
+include { MINIPROT_ALIGN         } from '../modules/nf-core/miniprot/align/main'
+include { PRODIGAL               } from '../modules/nf-core/prodigal/main' 
+
+// locale modules
+include { DOWNLOAD_PROTEOME_NCBI } from '../modules/local/downloadProteome/'
+include { GB_PARSER              } from "../modules/local/parser"
 
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
 include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_model_creation_pipeline'
 
-include { GB_PARSER              } from "../modules/local/parser"
 include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
 include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
 include { REFERENCE_ASSEMBLY     } from "../subworkflows/local/ref_assembly"
@@ -75,32 +81,72 @@ workflow MODEL_CREATION {
             eukaryote_ab   : meta.genome_type == 'euk' && meta.ann_type == 'ab_in'
             eukaryote_ref  : meta.genome_type == 'euk' && meta.ann_type == 'ref_in'
         }
-        .set { ch_annotation}
+        .set { ch_annotation }
 
-    // !TODO : Add GeneMark, Miniprot, Prodigical, Bakta
+    // Prokaryote ab-initio
+    PRODIGAL(
+        ch_annotation.prokaryote_ab,
+        'gff'
+    )
 
-    PROKKA(
-        ch_annotation.prokayote_ref
+    // !TODO GeneMark-ES here
+
+    // Reference annotation with MiniProt
+    ch_ref_annotation = ch_annotation.prokaryote_ref.mix(ch_annotation.eukaryote_ref)
+
+    ch_ref_annotation
+        .branch { meta, reads ->
+            needs_download : meta.pep_accession && !meta.pep_file
+            local_file      : meta.pep_file
+        }
+        .set { ch_pep_source }
+
+    DOWNLOAD_PROTEOME_NCBI(
+        ch_pep_source.needs_download
+            .map { meta, reads -> tuple(meta, meta.pep_accession) }
+    )
+
+    ch_pep = DOWNLOAD_PROTEOME_NCBI.out.pep
+        .mix(
+            ch_pep_source.local_file
+                .map { meta, reads -> tuple(meta, file(meta.pep_file)) }
+        )
+
+    ch_ref_with_pep = ch_ref_annotation
+        .map { meta, reads -> tuple(meta.id, meta, reads) }
+        .join(ch_pep.map { meta, pep -> tuple(meta.id, pep) }, by: 0)
+        .map { id, meta, reads, pep -> tuple(meta, reads, pep) }
+
+    MINIPROT_INDEX(
+        ch_ref_with_pep.map { meta, reads, pep -> tuple(meta, reads) }
+    )
+
+    MINIPROT_ALIGN(
+        ch_ref_with_pep.map { meta, reads, pep -> tuple(meta.id, meta, pep) }
+            .join(
+                MINIPROT_INDEX.out.index.map { meta, idx -> tuple(meta.id, meta, idx) },
+                by: 0
+            )
+            .map { id, meta, pep, meta2, idx -> tuple(meta, pep, meta2, idx) }
     )
 
     // 
     // MODULE : Genbank file parsing
-    // 
+    // !TODO This needs to be looked since it might not be needed anymore
 
     GB_PARSER(
-        PROKKA.out.gbk,
+        ch_annotation,
         file(params.parser_script)
     )
 
     // 
-    // WORKFLOW : Web Requests to UniProt and KEGG
+    // WORKFLOW : Web Requests 
     // 
 
     WEB_REQUESTS(
+        meta.db_type,
         GB_PARSER.out.uni_first
     )
-
-    ch_multiqc_files = ch_multiqc_files.mix(WEB_REQUESTS.out.fixed_db.collect{it[1]})
 
     //
     // WORKFLOW : Metabolic Model Creation
@@ -110,9 +156,6 @@ workflow MODEL_CREATION {
         WEB_REQUESTS.out.fixed_db
             .join(WEB_REQUESTS.out.go_terms)
     )
-
-    ch_multiqc_files = ch_multiqc_files.mix(MODEL_BUILDING.out.finished_model.collect{it[1]})
-
 
     //
     // Collate and save software versions

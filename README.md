@@ -25,7 +25,7 @@
 2.b. Reference-guided Assembly via [`Bowtie2`](https://bowtie-bio.sourceforge.net/bowtie2/), [`SAMtools`](https://www.htslib.org/) and [`BCFtools`](https://samtools.github.io/bcftools/)
 3. Genome Annotation
 3.a.1. Ab inito annotation for prokaryotes via Prodigal
-3.a.2. Database guided annotation for prokaryotes via Bakta
+3.a.2. Database guided annotation for prokaryotes via miniprot
 3.b.1. Ab inito annotation for eukaryotes via GeneMark-ES
 3.b.2. Database guided annotation for eukaryotes via miniprot
 4. Database enrichment via python scripts : Currently defaults to KEGG, has options for BiGG and NCBI
@@ -52,6 +52,8 @@ The columns are defined as follows:
 - `ref_file` : Reference file to be used in Reference-guided assembly (File Path)
 - `genome_type` : Identifier used for prokaryotes(pro) and eukaroytes(euk) (String)
 - `ann_type` : Whether ab initio(ab_in) or database guided annotation(ref_in) should be used (String)
+- `pep_accession` : RefSeq accession number that would be used for downloading the protein information from NCBI when guided annotation is used. (String)
+- `pep_file` : Protein information file path when guided annotation is used. (File Path)
 - `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has 'BiGG' and 'NCBI' options. (String)
 
 Now, you can run the pipeline using:
