@@ -31,23 +31,7 @@ workflow MODEL_CREATION {
 
     main:
     ch_reads = ch_samplesheet
-        .map { meta, fastqs ->
-            def m = meta instanceof Map ? meta.clone() : [:]
-            if (!m.containsKey('rxn_id') && m.containsKey('RXN_ID')) m.rxn_id = m['RXN_ID']
-            if (!m.containsKey('max_min') && m.containsKey('MAX_MIN')) m.max_min = m['MAX_MIN']
-            if (!m.containsKey('sample') && m.containsKey('id'))       m.sample  = m.id
-            if (!m.containsKey('single_end')) m.single_end = false
-
-            // Coerce has_ref to a real boolean regardless of input type
-            def rawRef = m.containsKey('has_ref') ? m.has_ref : false
-            m.has_ref = (rawRef instanceof Boolean) ? rawRef : rawRef.toString().trim().toLowerCase() == 'true'
-
-            // Attach optional ref_file path (may be null / empty string)
-            def rawRef_file = m.containsKey('ref_file') ? m.ref_file?.toString()?.trim() : ''
-            m.ref_file = (rawRef_file && rawRef_file != '') ? file(rawRef_file) : null
-
-            tuple(m, fastqs.collect { file(it) })
-        }
+        .map { meta, fastqs -> tuple(meta, fastqs.collect { file(it) }) }
 
     ch_versions      = channel.empty()
     ch_multiqc_files = channel.empty()
@@ -56,6 +40,10 @@ workflow MODEL_CREATION {
     FASTQC(ch_reads)
     ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.collect { it[1] })
     ch_versions      = ch_versions.mix(FASTQC.out.versions.first())
+
+    //
+    // Assembly
+    //
 
     ch_reads
         .branch { meta, reads ->
@@ -74,11 +62,25 @@ workflow MODEL_CREATION {
         }
     )
 
-
     ch_contigs = SPADES.out.contigs.mix(REFERENCE_ASSEMBLY.out.contigs)
 
+    //
+    // Annotation
+    //
+
+    ch_contigs
+        .branch { meta, reads ->
+            prokaryote_ab  : meta.genome_type == 'pro' && meta.ann_type == 'ab_in'
+            prokaryote_ref : meta.genome_type == 'pro' && meta.ann_type == 'ref_in'
+            eukaryote_ab   : meta.genome_type == 'euk' && meta.ann_type == 'ab_in'
+            eukaryote_ref  : meta.genome_type == 'euk' && meta.ann_type == 'ref_in'
+        }
+        .set { ch_annotation}
+
+    // !TODO : Add GeneMark, Miniprot, Prodigical, Bakta
+
     PROKKA(
-        ch_contigs
+        ch_annotation.prokayote_ref
     )
 
     // 

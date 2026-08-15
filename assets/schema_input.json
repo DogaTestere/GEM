@@ -1,46 +1,72 @@
 {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://raw.githubusercontent.com/iumobg/model_creation/main/assets/schema_input.json",
-    "title": "iumobg/model_creation pipeline - params.input schema",
-    "description": "Schema for the file provided with params.input",
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "sample": {
-                "type": "string",
-                "pattern": "^\\S+$",
-                "errorMessage": "Sample name must be provided and cannot contain spaces",
-                "meta": ["id"]
-            },
-            "fastq_1": {
-                "type": "string",
-                "format": "file-path",
-                "exists": true,
-                "pattern": "^([\\S\\s]*\\/)?[^\\s\\/]+\\.f(ast)?q\\.gz$",
-                "errorMessage": "FastQ file for reads 1 must be provided, cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
-            },
-            "fastq_2": {
-                "type": "string",
-                "format": "file-path",
-                "exists": true,
-                "pattern": "^([\\S\\s]*\\/)?[^\\s\\/]+\\.f(ast)?q\\.gz$",
-                "errorMessage": "FastQ file for reads 2 cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
-            }
-            ,
-            "RXN_ID": {
-                "type": "string",
-                "pattern": "^\\S+$",
-                "errorMessage": "RXN_ID must be provided and cannot contain spaces",
-                "meta": ["rxn_id"]
-            },
-            "max_min": {
-                "type": "string",
-                "enum": ["max","min"],
-                "errorMessage": "max_min must be either 'max' or 'min'",
-                "meta": ["max_min"]
-            }
-        },
-        "required": ["sample", "fastq_1"]
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/iumobg/model_creation/master/assets/schema_input.json",
+  "title": "model_creation pipeline - params.input schema",
+  "description": "Schema for the file provided with params.input",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "sample": {
+        "type": "string",
+        "pattern": "^\\S+$",
+        "errorMessage": "Sample name must be provided and cannot contain spaces",
+        "meta": ["sample", "id"]
+      },
+      "fastq_1": {
+        "type": "string",
+        "format": "file-path",
+        "exists": true,
+        "pattern": "^\\S+\\.f(ast)?q\\.gz$",
+        "errorMessage": "fastq_1 must be an existing file ending in .fastq.gz or .fq.gz"
+      },
+      "fastq_2": {
+        "type": "string",
+        "format": "file-path",
+        "exists": true,
+        "pattern": "^\\S+\\.f(ast)?q\\.gz$",
+        "errorMessage": "fastq_2 must be an existing file ending in .fastq.gz or .fq.gz, if provided"
+      },
+      "has_ref": {
+        "type": "boolean",
+        "default": false,
+        "meta": ["has_ref"],
+        "errorMessage": "has_ref must be true or false"
+      },
+      "ref_file": {
+        "type": "string",
+        "format": "file-path",
+        "exists": true,
+        "meta": ["ref_file"],
+        "errorMessage": "ref_file must be an existing file path when provided"
+      },
+      "genome_type": {
+        "type": "string",
+        "enum": ["pro", "euk"],
+        "meta": ["genome_type"],
+        "errorMessage": "genome_type must be 'pro' or 'euk'"
+      },
+      "ann_type": {
+        "type": "string",
+        "enum": ["ab_in", "ref_in"],
+        "meta": ["ann_type"],
+        "errorMessage": "ann_type must be 'ab_in' or 'ref_in'"
+      },
+      "db_type": {
+        "type": "string",
+        "enum": ["KEGG", "BiGG", "NCBI"],
+        "default": "KEGG",
+        "meta": ["db_type"],
+        "errorMessage": "db_type must be one of 'KEGG', 'BiGG', 'NCBI'"
+      }
+    },
+    "required": ["sample", "fastq_1", "has_ref", "genome_type", "ann_type"],
+    "if": {
+      "properties": { "has_ref": { "const": true } }
+    },
+    "then": {
+      "required": ["ref_file"],
+      "errorMessage": "ref_file is required when has_ref is true"
     }
+  }
 }

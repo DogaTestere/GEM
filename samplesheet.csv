@@ -1,2 +1,2 @@
-sample,fastq_1,fastq_2,has_ref,ref_file,genome_type
+sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,db_type
 CONTROL_REP2,./tests/test_files/ec1_S1_L001_R1_001.fastq.gz,./tests/test_files/ec1_S1_L001_R2_001.fastq.gz,true,./tests/test_files/e_coli.fasta,pro
