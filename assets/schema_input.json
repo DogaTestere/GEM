@@ -52,6 +52,19 @@
         "meta": ["ann_type"],
         "errorMessage": "ann_type must be 'ab_in' or 'ref_in'"
       },
+      "pep_accession": {
+        "type": "string",
+        "pattern": "^GC[AF]_[0-9]{9}\\.[0-9]+$",
+        "meta": ["pep_accession"],
+        "errorMessage": "pep_accession must be a valid NCBI assembly accession, e.g. GCF_000001635.27"
+      },
+      "pep_file": {
+        "type": "string",
+        "format": "file-path",
+        "exists": true,
+        "meta": ["pep_file"],
+        "errorMessage": "pep_file must be an existing protein FASTA file when provided"
+      },
       "db_type": {
         "type": "string",
         "enum": ["KEGG", "BiGG", "NCBI"],
@@ -61,12 +74,26 @@
       }
     },
     "required": ["sample", "fastq_1", "has_ref", "genome_type", "ann_type"],
-    "if": {
-      "properties": { "has_ref": { "const": true } }
-    },
-    "then": {
-      "required": ["ref_file"],
-      "errorMessage": "ref_file is required when has_ref is true"
-    }
+    "allOf": [
+      {
+        "if": { "properties": { "has_ref": { "const": true } } },
+        "then": { "required": ["ref_file"] }
+      },
+      {
+        "if": {
+          "properties": {
+            "genome_type": { "const": "euk" },
+            "ann_type": { "const": "ref_in" }
+          }
+        },
+        "then": {
+          "anyOf": [
+            { "required": ["pep_accession"] },
+            { "required": ["pep_file"] }
+          ],
+          "errorMessage": "Either pep_accession or pep_file is required when genome_type is 'euk' and ann_type is 'ref_in'"
+        }
+      }
+    ]
   }
 }

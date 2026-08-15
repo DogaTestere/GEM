@@ -86,7 +86,6 @@ workflow MODEL_CREATION {
     // Prokaryote ab-initio
     PRODIGAL(
         ch_annotation.prokaryote_ab,
-        'gff'
     )
 
     // !TODO GeneMark-ES here
@@ -141,7 +140,7 @@ workflow MODEL_CREATION {
 
     // 
     // WORKFLOW : Web Requests 
-    // 
+    // !TODO Make the subworkflow accept db_type
 
     WEB_REQUESTS(
         meta.db_type,
