@@ -10,10 +10,13 @@ include { PROKKA                 } from '../modules/nf-core/prokka/main'
 include { MINIPROT_INDEX         } from '../modules/nf-core/miniprot/index/main' 
 include { MINIPROT_ALIGN         } from '../modules/nf-core/miniprot/align/main'
 include { PRODIGAL               } from '../modules/nf-core/prodigal/main' 
+include { EGGNOGMAPPER           } from '../modules/nf-core/eggnogmapper/main'
+include { GFFREAD                } from '../modules/nf-core/gffread/main'
 
 // locale modules
 include { DOWNLOAD_PROTEOME_NCBI } from '../modules/local/downloadProteome/'
 include { GB_PARSER              } from "../modules/local/parser"
+include { GENEMARK_ES            } from "../modules/local/genemark_es"
 
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -88,7 +91,11 @@ workflow MODEL_CREATION {
         ch_annotation.prokaryote_ab,
     )
 
-    // !TODO GeneMark-ES here
+    // Eukaryote ab-initio
+    GENEMARK_ES(
+        ch_annotation.eukaryote_ab,
+        file(params.genemark_key)
+    )
 
     // Reference annotation with MiniProt
     ch_ref_annotation = ch_annotation.prokaryote_ref.mix(ch_annotation.eukaryote_ref)
@@ -120,30 +127,54 @@ workflow MODEL_CREATION {
         ch_ref_with_pep.map { meta, reads, pep -> tuple(meta, reads) }
     )
 
+    ch_miniprot_align_in = ch_ref_with_pep
+        .map { meta, reads, pep -> tuple(meta.id, meta, pep) }
+        .join(
+            MINIPROT_INDEX.out.index.map { meta, idx -> tuple(meta.id, meta, idx) },
+            by: 0
+        )
+        .multiMap { id, meta, pep, meta2, idx ->
+            pep_ch: tuple(meta, pep)
+            idx_ch: tuple(meta2, idx)
+        }
+
     MINIPROT_ALIGN(
-        ch_ref_with_pep.map { meta, reads, pep -> tuple(meta.id, meta, pep) }
-            .join(
-                MINIPROT_INDEX.out.index.map { meta, idx -> tuple(meta.id, meta, idx) },
-                by: 0
-            )
-            .map { id, meta, pep, meta2, idx -> tuple(meta, pep, meta2, idx) }
+        ch_miniprot_align_in.pep_ch,
+        ch_miniprot_align_in.idx_ch
     )
 
-    // 
-    // MODULE : Genbank file parsing
-    // !TODO This needs to be looked since it might not be needed anymore
+    ch_gffread_in = MINIPROT_ALIGN.out.gff
+        .map { meta, gff -> tuple(meta.id, meta, gff) }
+        .join(
+            ch_contigs.map { meta, contigs -> tuple(meta.id, contigs) },
+            by: 0
+        )
+        .multiMap { id, meta, gff, contigs ->
+            gff_ch:   tuple(meta, gff)
+            fasta_ch: contigs
+        }
 
-    GB_PARSER(
-        ch_annotation,
-        file(params.parser_script)
+    GFFREAD(
+        ch_gffread_in.gff_ch,
+        ch_gffread_in.fasta_ch
+    )
+
+    // Protein Functional Annotation
+
+    ch_eggnog_input = Channel.empty()
+        .mix(PRODIGAL.out.amino_acid_fasta)    
+        .mix(GENEMARK_ES.out.gtf)             
+        .mix(GFFREAD.out.gffread_fasta)
+
+    EGGNOGMAPPER(
+        
     )
 
     // 
     // WORKFLOW : Web Requests 
-    // !TODO Make the subworkflow accept db_type
+    //
 
     WEB_REQUESTS(
-        meta.db_type,
         GB_PARSER.out.uni_first
     )
 
