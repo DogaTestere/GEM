@@ -1,7 +1,0 @@
-name: gb_parser
-channels:
-  - conda-forge
-  - bioconda
-dependencies:
-  - python=3.11
-  - biopython
