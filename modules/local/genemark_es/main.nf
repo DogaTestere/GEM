@@ -1,4 +1,3 @@
-// modules/local/genemark_es.nf
 process GENEMARK_ES {
     tag "$meta.id"
     label 'process_high'
