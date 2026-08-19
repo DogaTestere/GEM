@@ -15,7 +15,6 @@ include { GFFREAD                } from '../modules/nf-core/gffread/main'
 
 // locale modules
 include { DOWNLOAD_PROTEOME_NCBI } from '../modules/local/downloadProteome/'
-include { GB_PARSER              } from "../modules/local/parser"
 include { GENEMARK_ES            } from "../modules/local/genemark_es"
 
 include { paramsSummaryMap       } from 'plugin/nf-schema'
@@ -77,102 +76,109 @@ workflow MODEL_CREATION {
     // Annotation
     //
 
+    // This would need to further seperated if we change from the miniprot
     ch_contigs
-        .branch { meta, reads ->
-            prokaryote_ab  : meta.genome_type == 'pro' && meta.ann_type == 'ab_in'
-            prokaryote_ref : meta.genome_type == 'pro' && meta.ann_type == 'ref_in'
-            eukaryote_ab   : meta.genome_type == 'euk' && meta.ann_type == 'ab_in'
-            eukaryote_ref  : meta.genome_type == 'euk' && meta.ann_type == 'ref_in'
+        .branch { meta, reads -> 
+            ab_initio: meta.ann_type == 'ab_in'
+            reference: meta.ann_type == 'ref_in'
         }
-        .set { ch_annotation }
+        .set { ch_annotation}
+
+    ch_annotation.ab_initio
+        .branch { meta, reads ->
+            pro: meta.genome_type == 'pro'
+            euk: meta.genome_type == 'euk'
+        }
+        .set { ch_ab_initio }
 
     // Prokaryote ab-initio
     PRODIGAL(
-        ch_annotation.prokaryote_ab,
+        ch_ab_initio.pro,
+        'gbk'
     )
 
     // Eukaryote ab-initio
     GENEMARK_ES(
-        ch_annotation.eukaryote_ab,
+        ch_ab_initio.euk,
         file(params.genemark_key)
     )
 
-    // Reference annotation with MiniProt
-    ch_ref_annotation = ch_annotation.prokaryote_ref.mix(ch_annotation.eukaryote_ref)
+    // Turning genemark .gtf into .fasta
+    ch_genemark_gff = GFFREAD(
+        GENEMARK_ES.out.gtf.map { meta, gtf -> tuple(meta, gtf)},
+        ch_ab_initio.euk.map { meta, fasta -> fasta}
+    )
 
-    ch_ref_annotation
+    // Proteome file checking and downloading
+    ch_annotation.reference
         .branch { meta, reads ->
-            needs_download : meta.pep_accession && !meta.pep_file
-            local_file      : meta.pep_file
+            has_pep : meta.pep_file
+            down_pep : meta.pep_accession && !meta.pep_file
         }
-        .set { ch_pep_source }
+        .set { ch_ref_split }
+
+    // This is done so that later channel mix doesn't devolve into 5 line merge
+    ch_pep_existing = ch_ref_split.has_pep_file
+        .map { meta, reads ->
+            tuple(meta, file(meta.pep_file))
+        }
 
     DOWNLOAD_PROTEOME_NCBI(
-        ch_pep_source.needs_download
-            .map { meta, reads -> tuple(meta, meta.pep_accession) }
-    )
-
-    ch_pep = DOWNLOAD_PROTEOME_NCBI.out.pep
-        .mix(
-            ch_pep_source.local_file
-                .map { meta, reads -> tuple(meta, file(meta.pep_file)) }
-        )
-
-    ch_ref_with_pep = ch_ref_annotation
-        .map { meta, reads -> tuple(meta.id, meta, reads) }
-        .join(ch_pep.map { meta, pep -> tuple(meta.id, pep) }, by: 0)
-        .map { id, meta, reads, pep -> tuple(meta, reads, pep) }
-
-    MINIPROT_INDEX(
-        ch_ref_with_pep.map { meta, reads, pep -> tuple(meta, reads) }
-    )
-
-    ch_miniprot_align_in = ch_ref_with_pep
-        .map { meta, reads, pep -> tuple(meta.id, meta, pep) }
-        .join(
-            MINIPROT_INDEX.out.index.map { meta, idx -> tuple(meta.id, meta, idx) },
-            by: 0
-        )
-        .multiMap { id, meta, pep, meta2, idx ->
-            pep_ch: tuple(meta, pep)
-            idx_ch: tuple(meta2, idx)
+        ch_ref_split.down_pep.map { meta, reads ->
+            tuple(meta, meta.pep_accession)
         }
+    )
+
+    ch_complete_pep = ch_pep_existing.mix(DOWNLOAD_PROTEOME_NCBI.out.pep)
+
+    // Miniprot
+    MINIPROT_INDEX(
+        ch_complete_pep
+    )
 
     MINIPROT_ALIGN(
-        ch_miniprot_align_in.pep_ch,
-        ch_miniprot_align_in.idx_ch
+        ch_annotation.reference,
+        MINIPROT_INDEX.out.index.map { meta, index -> tuple(meta, index) }
     )
 
-    ch_gffread_in = MINIPROT_ALIGN.out.gff
-        .map { meta, gff -> tuple(meta.id, meta, gff) }
-        .join(
-            ch_contigs.map { meta, contigs -> tuple(meta.id, contigs) },
-            by: 0
-        )
-        .multiMap { id, meta, gff, contigs ->
-            gff_ch:   tuple(meta, gff)
-            fasta_ch: contigs
-        }
-
-    GFFREAD(
-        ch_gffread_in.gff_ch,
-        ch_gffread_in.fasta_ch
+    // Turning miniprot output into eggnogmapper readable version
+    ch_gff = MINIPROT_ALIGN.out.gff
+        .join(ch_annotation.reference)
+    
+    ch_miniprot_gff = GFFREAD(
+        ch_gff.map { meta, gff, contigs -> tuple(meta, gff)},
+        ch_gff.map { meta, gff, contigs -> contigs}
     )
 
     // Protein Functional Annotation
-
-    ch_eggnog_input = Channel.empty()
-        .mix(PRODIGAL.out.amino_acid_fasta)    
-        .mix(GENEMARK_ES.out.gtf)             
-        .mix(GFFREAD.out.gffread_fasta)
+    ch_complete_annot = ch_genemark_gff.out.gffread_fasta
+        .mix(ch_miniprot_gff.out.gffread_fasta)
+        .mix(PRODIGAL.out.amino_acid_fasta)
+    
+    // This is for tuple val(search_mode), path(db)
+    ch_eggnog_db = ch_complete_annot
+        .map { meta, fasta ->
+            def mode = meta.search_mode ?: 'diamond'
+            def db_path = mode == 'diamond' ? params.eggnog_db_diamond :
+                          mode == 'novel_fams' ? params.eggnog_db_novel_fams :
+                          mode == 'mmseqs'  ? params.eggnog_db_mmseqs :
+                          mode == 'hmmer'   ? params.eggnog_db_hmmer :
+                          mode == 'no_search' ? params.eggnog_no_search_file :
+                          params.eggnog_db_default
+            tuple(mode, file(db_path))
+        }
+        .unique { it[0] }
 
     EGGNOGMAPPER(
-        
+        ch_complete_annot,
+        ch_eggnog_db,
     )
 
     // 
     // WORKFLOW : Web Requests 
     //
+
+    // !TODO: Adapt this to the eggnogmapper outputs
 
     WEB_REQUESTS(
         GB_PARSER.out.uni_first

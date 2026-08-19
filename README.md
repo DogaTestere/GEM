@@ -40,8 +40,7 @@ First, prepare a samplesheet with your input data that looks as follows:
 `samplesheet.csv`:
 
 ```csv
-sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,db_type
-SAMPLE1, ec1_S1_L001_R1_001.fastq.gz, ec1_S1_L001_R2_001.fastq.gz,true, e_coli_ref.fasta, pro, ref_in, KEGG
+sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,pep_accession,pep_file,search_mode,db_type
 ```
 Each row represents one biological sample.
 The columns are defined as follows:
@@ -54,6 +53,7 @@ The columns are defined as follows:
 - `ann_type` : Whether ab initio(ab_in) or database guided annotation(ref_in) should be used (String)
 - `pep_accession` : RefSeq accession number that would be used for downloading the protein information from NCBI when guided annotation is used. (String)
 - `pep_file` : Protein information file path when guided annotation is used. (File Path)
+- `search_mode` : Name of the database that will be used in Eggnogmapper for functional annotation. Can be 'diamond', 'novel_fams', 'mmseqs', 'hmmer', 'no_search'. (String)
 - `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has 'BiGG' and 'NCBI' options. (String)
 
 Now, you can run the pipeline using:
