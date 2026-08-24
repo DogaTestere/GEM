@@ -13,6 +13,9 @@ include { PRODIGAL               } from '../modules/nf-core/prodigal/main'
 include { EGGNOGMAPPER           } from '../modules/nf-core/eggnogmapper/main'
 include { GFFREAD                } from '../modules/nf-core/gffread/main'
 
+include { GUNZIP as GUNZIP_PRODIGAL_FAA } from '../modules/nf-core/gunzip/main' 
+include { GUNZIP as GUNZIP_PRODIGAL_GFF } from '../modules/nf-core/gunzip/main' 
+
 // locale modules
 include { DOWNLOAD_PROTEOME_NCBI } from '../modules/local/downloadProteome/'
 include { GENEMARK_ES            } from "../modules/local/genemark_es"
@@ -25,7 +28,7 @@ include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_mode
 include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
 include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
 include { REFERENCE_ASSEMBLY     } from "../subworkflows/local/ref_assembly"
-
+include { PSAMM_MODEL_MAKING     } from "../subworkflows/local/psamm_model_making"
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     RUN MAIN WORKFLOW
@@ -94,8 +97,14 @@ workflow MODEL_CREATION {
     // Prokaryote ab-initio
     PRODIGAL(
         ch_ab_initio.pro,
-        'gbk'
+        'gff'
     )
+
+    // Removes the .gz compression from protein file : Eggnog
+    GUNZIP_PRODIGAL_FAA(PRODIGAL.out.amino_acid_fasta)
+
+    // Removes the .gz compression from annotations : PSAMM
+    GUNZIP_PRODIGAL_GFF(PRODIGAL.out.gene_annotations)
 
     // Eukaryote ab-initio
     GENEMARK_ES(
@@ -150,10 +159,9 @@ workflow MODEL_CREATION {
         ch_gff.map { meta, gff, contigs -> contigs}
     )
 
-    // Protein Functional Annotation
     ch_complete_annot = ch_genemark_gff.out.gffread_fasta
         .mix(ch_miniprot_gff.out.gffread_fasta)
-        .mix(PRODIGAL.out.amino_acid_fasta)
+        .mix(GUNZIP_PRODIGAL_FAA.out.gunzip)
     
     // This is for tuple val(search_mode), path(db)
     ch_eggnog_db = ch_complete_annot
@@ -169,9 +177,25 @@ workflow MODEL_CREATION {
         }
         .unique { it[0] }
 
+    // Functional Annotation
     EGGNOGMAPPER(
         ch_complete_annot,
         ch_eggnog_db,
+    )
+
+    //
+    // WORKFLOW : PSAMM Model Building
+    //
+
+    ch_gff_annots = GUNZIP_PRODIGAL_GFF.out.gunzip
+        .mix(GENEMARK_ES.out.gtf)
+        .mix(MINIPROT_ALIGN.out.gff)
+    
+    PSAMM_MODEL_MAKING(
+        EGGNOGMAPPER.out.annotations,
+        ch_contigs,
+        ch_complete_pep, // Bunun çıktısı .faa olabiliyor, sıkıntı çıkıp çıkmadığının kontrolü lazım
+        ch_gff_annots
     )
 
     // 
