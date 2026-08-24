@@ -1,9 +1,0 @@
-name: uniprot_mapping
-channels:
-  - conda-forge
-  - bioconda
-dependencies:
-  - python=3.11
-  - pip
-  - pip:
-      - requests
