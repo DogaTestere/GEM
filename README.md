@@ -21,15 +21,13 @@
 
 1. Quality Control via [`FastQC`](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/)
 2. Genome Assembly
-2.a. De Novo Assembly via [`SPAdes`](https://github.com/ablab/spades)
-2.b. Reference-guided Assembly via [`Bowtie2`](https://bowtie-bio.sourceforge.net/bowtie2/), [`SAMtools`](https://www.htslib.org/) and [`BCFtools`](https://samtools.github.io/bcftools/)
+     1. De Novo Assembly via [`SPAdes`](https://github.com/ablab/spades)
+     2. Reference-guided Assembly via [`Bowtie2`](https://bowtie-bio.sourceforge.net/bowtie2/), [`SAMtools`](https://www.htslib.org/) and [`BCFtools`](https://samtools.github.io/bcftools/)
 3. Genome Annotation
-3.a.1. Ab inito annotation for prokaryotes via Prodigal
-3.a.2. Database guided annotation for prokaryotes via miniprot
-3.b.1. Ab inito annotation for eukaryotes via GeneMark-ES
-3.b.2. Database guided annotation for eukaryotes via miniprot
-4. Database enrichment via python scripts : Currently defaults to KEGG, has options for BiGG and NCBI
-5. Model creation via CobraPy
+     1. Ab initio Annotation for prokaryotes via Prodigal; eukaryotes via GeneMark-ES
+     2. Reference guided annotation for prokaryotes and eukaryotes via miniprot
+5. Database enrichment via python scripts : Currently defaults to KEGG, has options for MetaCyc and ModelSEED
+6. Model creation via CobraPy
 
 ## Usage
 
@@ -53,8 +51,8 @@ The columns are defined as follows:
 - `ann_type` : Whether ab initio(ab_in) or database guided annotation(ref_in) should be used (String)
 - `pep_accession` : RefSeq accession number that would be used for downloading the protein information from NCBI when guided annotation is used. (String)
 - `pep_file` : Protein information file path when guided annotation is used. (File Path)
-- `search_mode` : Name of the database that will be used in Eggnogmapper for functional annotation. Can be 'diamond', 'novel_fams', 'mmseqs', 'hmmer', 'no_search'. (String)
-- `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has 'BiGG' and 'NCBI' options. (String)
+- `search_mode` : Name of the database that will be used in Eggnogmapper for functional annotation. Can be 'diamond', 'novel_fams', 'mmseqs', 'hmmer'. (String)
+- `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has ModelSEED and MetaCyc as options (String)
 
 Now, you can run the pipeline using:
 
