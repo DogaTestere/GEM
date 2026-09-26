@@ -43,7 +43,6 @@ in
     venv = {
       enable = true;
       requirements = ./requirements.txt;
-     quiet = true;
     };
   };
 

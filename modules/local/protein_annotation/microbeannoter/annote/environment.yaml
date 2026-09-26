@@ -1,0 +1,7 @@
+name: microbeannotator
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - bioconda::microbeannotator=2.0.5

@@ -1,7 +1,0 @@
-name: manual_checks
-
-channels:
-  - conda-forge
-
-dependencies:
-  - python=3.11

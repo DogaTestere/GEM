@@ -1,10 +1,10 @@
-include { BOWTIE_ALIGNMENT   } from "../../../modules/local/refAlignment"
-include { BOWTIE_INDEXING    } from "../../../modules/local/refIndexing"
-include { SAMTOOLS_SORT      } from "../../../modules/local/bamConversion"
-include { SAMTOOLS_INDEX     } from "../../../modules/local/bamIndexing"
-include { BCFTOOLS_CALL      } from "../../../modules/local/variantCalling"
-include { BCFTOOLS_INDEX     } from "../../../modules/local/vcfIndexing"
-include { BCFTOOLS_CONCENSUS } from "../../../modules/local/concensusCreation" 
+include { BOWTIE_ALIGNMENT   } from "../../../modules/local/referenceAssembly/refAlignment"
+include { BOWTIE_INDEXING    } from "../../../modules/local/referenceAssembly/refIndexing"
+include { SAMTOOLS_SORT      } from "../../../modules/local/referenceAssembly/bamConversion"
+include { SAMTOOLS_INDEX     } from "../../../modules/local/referenceAssembly/bamIndexing"
+include { BCFTOOLS_CALL      } from "../../../modules/local/referenceAssembly/variantCalling"
+include { BCFTOOLS_INDEX     } from "../../../modules/local/referenceAssembly/vcfIndexing"
+include { BCFTOOLS_CONCENSUS } from "../../../modules/local/referenceAssembly/concensusCreation" 
 
 workflow REFERENCE_ASSEMBLY {
     take:

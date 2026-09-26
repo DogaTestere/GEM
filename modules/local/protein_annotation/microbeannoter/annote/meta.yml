@@ -1,0 +1,38 @@
+name: microbeannotator
+description: Functional annotation of microbial protein sequences using KEGG KO, SwissProt, RefSeq, and Trembl databases.
+keywords:
+  - annotation
+  - kegg
+  - ko
+  - metabolism
+  - bacteria
+  - archaea
+
+input:
+  - meta:
+      type: map
+      description: Groovy Map containing sample information
+  - faa:
+      type: file
+      description: Protein FASTA file to annotate
+      pattern: "*.{faa,fa,fasta}"
+  - db:
+      type: directory
+      description: MicrobeAnnotator database directory (built by microbeannotator_db_builder)
+  - search_method:
+      type: string
+      description: Search method matching the database build method (blast, diamond, or sword)
+
+output:
+  - annotations:
+      type: file
+      description: Tab-separated annotation table with KO numbers, EC numbers, GO terms, and product names
+      pattern: "*.annotations"
+  - kofam_hits:
+      type: file
+      description: Raw KofamScan search results
+      pattern: "*.kofam"
+  - versions:
+      type: file
+      description: File containing software versions
+      pattern: "versions.yml"
