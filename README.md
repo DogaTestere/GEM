@@ -14,7 +14,7 @@
 
 ## Introduction
 
-**iumobg/model_creation** is a bioinformatics pipeline that converts raw FASTQ sequencing reads into a genome-scale metabolic model (GEM) and performs constraint-based simulations. The full pipeline conducts quality control, genome assembly(de novo or reference-guided) and annotation(ab-inito or reference-based) then uses chosen database(currently BiGG, KEGG) to construct a GEM.
+**iumobg/model_creation** is a bioinformatics pipeline that converts raw FASTQ sequencing reads into a genome-scale metabolic model (GEM) and performs constraint-based simulations. The full pipeline conducts quality control, genome assembly(de novo or reference-guided) and annotation(ab-inito or reference-based) then uses chosen database(KEGG) to construct a GEM.
 
 <!-- TODO nf-core: Include a figure that guides the user through the major workflow steps. Many nf-core
      workflows use the "tube map" design for that. See https://nf-co.re/docs/guidelines/graphic_design/workflow_diagrams#examples for examples.   -->
@@ -38,7 +38,7 @@ First, prepare a samplesheet with your input data that looks as follows:
 `samplesheet.csv`:
 
 ```csv
-sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,pep_accession,pep_file,search_mode,db_type
+sample,fastq_1,fastq_2,has_ref,ref_file,genome_type,ann_type,pep_accession,pep_file,db_type
 ```
 Each row represents one biological sample.
 The columns are defined as follows:
@@ -51,7 +51,6 @@ The columns are defined as follows:
 - `ann_type` : Whether ab initio(ab_in) or database guided annotation(ref_in) should be used (String)
 - `pep_accession` : RefSeq accession number that would be used for downloading the protein information from NCBI when guided annotation is used. (String)
 - `pep_file` : Protein information file path when guided annotation is used. (File Path)
-- `search_mode` : Name of the database that will be used in Eggnogmapper for functional annotation. Can be 'diamond', 'novel_fams', 'mmseqs', 'hmmer'. (String)
 - `db_type` : Name of the database that should be used to mainly search for information in order to build the GEM. Defaults to KEGG, has ModelSEED and MetaCyc as options (String)
 
 Now, you can run the pipeline using:
