@@ -1,0 +1,29 @@
+name: metacerberus
+description: Functional annotation of protein sequences using HMMER against curated databases.
+keywords:
+  - annotation
+  - hmmer
+  - kegg
+  - metagenomics
+
+input:
+  - meta:
+      type: map
+      description: Groovy Map containing sample information
+  - faa:
+      type: file
+      description: Protein FASTA file to annotate
+      pattern: "*.{faa,fa,fasta}"
+  - database:
+      type: directory
+      description: Path to the MetaCerberus database directory
+
+output:
+  - tsv:
+      type: file
+      description: TSV file containing functional annotations (e.g., KO IDs)
+      pattern: "*.tsv"
+  - versions:
+      type: file
+      description: File containing software versions
+      pattern: "versions.yml"
