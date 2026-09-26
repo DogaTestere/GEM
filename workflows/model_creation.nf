@@ -3,29 +3,35 @@
     IMPORT MODULES / SUBWORKFLOWS / FUNCTIONS
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
+include { paramsSummaryMap       } from 'plugin/nf-schema'
+include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
+include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_model_creation_pipeline'
+
 include { FASTQC                 } from '../modules/nf-core/fastqc/main'
 include { MULTIQC                } from '../modules/nf-core/multiqc/main'
 include { SPADES                 } from "../modules/nf-core/spades"
-include { PROKKA                 } from '../modules/nf-core/prokka/main' 
+include { BAKTA_BAKTA            } from '../modules/nf-core/bakta/bakta/main'
+include { BAKTA_BAKTADBDOWNLOAD  } from '../modules/nf-core/bakta/baktadbdownload/main'
 include { MINIPROT_INDEX         } from '../modules/nf-core/miniprot/index/main' 
 include { MINIPROT_ALIGN         } from '../modules/nf-core/miniprot/align/main'
 include { PRODIGAL               } from '../modules/nf-core/prodigal/main' 
-include { EGGNOGMAPPER           } from '../modules/nf-core/eggnogmapper/main'
 include { GFFREAD                } from '../modules/nf-core/gffread/main'
 
 include { GUNZIP as GUNZIP_PRODIGAL_FAA } from '../modules/nf-core/gunzip/main' 
 include { GUNZIP as GUNZIP_PRODIGAL_GFF } from '../modules/nf-core/gunzip/main' 
 
 // locale modules
-include { DOWNLOAD_PROTEOME_NCBI } from '../modules/local/downloadProteome/'
-include { GENEMARK_ES            } from "../modules/local/genemark_es"
+// protein annotation
+include { METACERBERUS_DOWNLOAD     } from '../modules/local/protein_annotation/metacerberus/download'
+include { METACERBERUS_ANNOTE       } from '../modules/local/protein_annotation/metacerberus/annote'
+include { DOWNLOAD_PROTEOME_NCBI    } from '../modules/local/protein_annotation/downloadProteome'
+include { MICROBEANNOTER_DOWNLOADER } from '../modules/local/protein_annotation/microbeannoter/download'
+include { MICROBEANNOTER_ANNOTER    } from '../modules/local/protein_annotation/microbeannoter/annote'
 
-include { paramsSummaryMap       } from 'plugin/nf-schema'
-include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { softwareVersionsToYAML } from '../subworkflows/nf-core/utils_nfcore_pipeline'
-include { methodsDescriptionText } from '../subworkflows/local/utils_nfcore_model_creation_pipeline'
 
-include { WEB_REQUESTS           } from "../subworkflows/local/web_requests"
+
+include { DATABASE_BUILDING      } from "../subworkflows/local/database_building"
 include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
 include { REFERENCE_ASSEMBLY     } from "../subworkflows/local/ref_assembly"
 include { PSAMM_MODEL_MAKING     } from "../subworkflows/local/psamm_model_making"
@@ -94,31 +100,41 @@ workflow MODEL_CREATION {
         }
         .set { ch_ab_initio }
 
-    // Prokaryote ab-initio
-    PRODIGAL(
-        ch_ab_initio.pro,
-        'gff'
+    // Kinda legacy? I want to keep the eggnogmapper as an option if we fix the rstudio issue
+    ch_ab_initio.pro
+        .branch { meta, reads ->
+            eggnog: meta.func_ann == 'eggnog'
+            default: meta.func_ann != 'eggnog'
+        }
+        .set { ch_ab_pro }
+
+    //
+    // Ab-initio default path
+
+    if (params.bakta_db) {
+        ch_bakta_db = Channel.value(file(params.bakta_db))
+    } else {
+        BAKTA_BAKTADBDOWNLOAD()
+        ch_bakta_db = BAKTA_BAKTADBDOWNLOAD.out.db.first()
+    }
+
+    BAKTA_BAKTA(
+        ch_ab_pro.default,
+        ch_bakta_db
     )
 
-    // Removes the .gz compression from protein file : Eggnog
-    GUNZIP_PRODIGAL_FAA(PRODIGAL.out.amino_acid_fasta)
-
-    // Removes the .gz compression from annotations : PSAMM
-    GUNZIP_PRODIGAL_GFF(PRODIGAL.out.gene_annotations)
-
-    // Eukaryote ab-initio
-    GENEMARK_ES(
-        ch_ab_initio.euk,
-        file(params.genemark_key)
+    METACERBERUS_DOWNLOAD(
+        params.metacerberus_db
     )
 
-    // Turning genemark .gtf into .fasta
-    ch_genemark_gff = GFFREAD(
-        GENEMARK_ES.out.gtf.map { meta, gtf -> tuple(meta, gtf)},
-        ch_ab_initio.euk.map { meta, fasta -> fasta}
+    METACERBERUS_ANNOTE(
+        BAKTA_BAKTA.out.faa,
+        METACERBERUS_DOWNLOAD.out.db
     )
 
-    // Proteome file checking and downloading
+    // 
+    // Reference annotation default path
+
     ch_annotation.reference
         .branch { meta, reads ->
             has_pep : meta.pep_file
@@ -150,7 +166,7 @@ workflow MODEL_CREATION {
         MINIPROT_INDEX.out.index.map { meta, index -> tuple(meta, index) }
     )
 
-    // Turning miniprot output into eggnogmapper readable version
+    // Turns miniprot output to .fasta format so that it works both with microbeannoter and eggnogmapper
     ch_gff = MINIPROT_ALIGN.out.gff
         .join(ch_annotation.reference)
     
@@ -159,53 +175,56 @@ workflow MODEL_CREATION {
         ch_gff.map { meta, gff, contigs -> contigs}
     )
 
-    ch_complete_annot = ch_genemark_gff.out.gffread_fasta
-        .mix(ch_miniprot_gff.out.gffread_fasta)
-        .mix(GUNZIP_PRODIGAL_FAA.out.gunzip)
+    // Notes: package info
+    // downloads and builds db's with : microbeannotator_db_builder -d MicrobeAnnotator_DB -m [blast,diamond,sword] -t [# threads] --no-aspera
+    // probably run with --light                                      can be passed with params  can be passed with params
+    // annotes with : microbeannotator -i [fasta_1.fa fasta_2.fa] -d [microbeannotator_db_dir] -o [output folder] -m [blast,diamond,sword] -p [# processes] -t [# threads]
+    MICROBEANNOTER_DOWNLOADER(
+        params.microbe_annoter_db,
+        params.microbe_annoter_light
+    )
     
-    // This is for tuple val(search_mode), path(db)
-    ch_eggnog_db = ch_complete_annot
-        .map { meta, fasta ->
-            def mode = meta.search_mode ?: 'diamond'
-            def db_path = mode == 'diamond' ? params.eggnog_db_diamond :
-                          mode == 'novel_fams' ? params.eggnog_db_novel_fams :
-                          mode == 'mmseqs'  ? params.eggnog_db_mmseqs :
-                          mode == 'hmmer'   ? params.eggnog_db_hmmer :
-                          mode == 'no_search' ? params.eggnog_no_search_file :
-                          params.eggnog_db_default
-            tuple(mode, file(db_path))
-        }
-        .unique { it[0] }
+    MICROBEANNOTER_ANNOTER(
+        ch_miniprot_gff.gffread_fasta,
+        MICROBEANNOTER_DOWNLOADER.out.db
+        params.microbe_annoter_search
+    )
 
-    // Functional Annotation
+    //
+    // EGGNOG path
+
+    PRODIGAL(
+        ch_ab_initio.pro,
+        'gff'
+    )
+    GUNZIP_PRODIGAL_FAA(PRODIGAL.out.amino_acid_fasta)
+    // GUNZIP_PRODIGAL_GFF(PRODIGAL.out.gene_annotations)   // !TODO: re-enable if PSAMM needs it
+
+    ch_eggnog_input = GUNZIP_PRODIGAL_FAA.out.gunzip
+        .mix(ch_miniprot_by_annoter.eggnog)
+
     EGGNOGMAPPER(
-        ch_complete_annot,
-        ch_eggnog_db,
+        ch_eggnog_input,
+        file(params.eggnog_db)
     )
 
-    //
-    // WORKFLOW : PSAMM Model Building
-    //
+    // Output channels
+    ch_func_annot = Channel.empty()
 
-    ch_gff_annots = GUNZIP_PRODIGAL_GFF.out.gunzip
-        .mix(GENEMARK_ES.out.gtf)
-        .mix(MINIPROT_ALIGN.out.gff)
-    
-    PSAMM_MODEL_MAKING(
-        EGGNOGMAPPER.out.annotations,
-        ch_contigs,
-        ch_complete_pep, // Bunun çıktısı .faa olabiliyor, sıkıntı çıkıp çıkmadığının kontrolü lazım
-        ch_gff_annots
-    )
+    ch_complete_annot = ch_genemark_annot
+        .mix(GUNZIP_PRODIGAL_FAA.out.gunzip)
+        .mix(BAKTA.out.faa)
+        .mix(ch_miniprot_faa)
+
+    ch_complete_func_annot = 
 
     // 
-    // WORKFLOW : Web Requests 
+    // WORKFLOW : Database building & ID conversions
     //
 
-    // !TODO: Adapt this to the eggnogmapper outputs
-
-    WEB_REQUESTS(
-        GB_PARSER.out.uni_first
+    DATABASE_BUILDING(
+        ch_complete_annot,
+        ch_complete_func_annot
     )
 
     //
