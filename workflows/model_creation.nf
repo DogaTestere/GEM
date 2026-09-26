@@ -175,10 +175,6 @@ workflow MODEL_CREATION {
         ch_gff.map { meta, gff, contigs -> contigs}
     )
 
-    // Notes: package info
-    // downloads and builds db's with : microbeannotator_db_builder -d MicrobeAnnotator_DB -m [blast,diamond,sword] -t [# threads] --no-aspera
-    // probably run with --light                                      can be passed with params  can be passed with params
-    // annotes with : microbeannotator -i [fasta_1.fa fasta_2.fa] -d [microbeannotator_db_dir] -o [output folder] -m [blast,diamond,sword] -p [# processes] -t [# threads]
     MICROBEANNOTER_DOWNLOADER(
         params.microbe_annoter_db,
         params.microbe_annoter_light
