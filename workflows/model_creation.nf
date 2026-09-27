@@ -29,12 +29,12 @@ include { DOWNLOAD_PROTEOME_NCBI    } from '../modules/local/protein_annotation/
 include { MICROBEANNOTER_DOWNLOADER } from '../modules/local/protein_annotation/microbeannoter/download'
 include { MICROBEANNOTER_ANNOTER    } from '../modules/local/protein_annotation/microbeannoter/annote'
 
-
-
+// locale subworkflows
 include { DATABASE_BUILDING      } from "../subworkflows/local/database_building"
 include { MODEL_BUILDING         } from "../subworkflows/local/model_creation"
+//include { PSAMM_MODEL_MAKING     } from "../subworkflows/local/psamm_model_making"
+
 include { REFERENCE_ASSEMBLY     } from "../subworkflows/local/ref_assembly"
-include { PSAMM_MODEL_MAKING     } from "../subworkflows/local/psamm_model_making"
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     RUN MAIN WORKFLOW
@@ -124,13 +124,18 @@ workflow MODEL_CREATION {
     )
 
     METACERBERUS_DOWNLOAD(
-        params.metacerberus_db
+        params.metacerberus_db_list
     )
 
     METACERBERUS_ANNOTE(
         BAKTA_BAKTA.out.faa,
         METACERBERUS_DOWNLOAD.out.db
     )
+
+    // default ab-initio output channel
+    ch_bakta_mc_ouput = BAKTA_BAKTA.out.faa
+        .join(BAKTA_BAKTA.out.tsv)
+        .join(METACERBERUS_ANNOTE.out.tsv)
 
     // 
     // Reference annotation default path
@@ -156,14 +161,13 @@ workflow MODEL_CREATION {
 
     ch_complete_pep = ch_pep_existing.mix(DOWNLOAD_PROTEOME_NCBI.out.pep)
 
-    // Miniprot
     MINIPROT_INDEX(
         ch_complete_pep
     )
 
     MINIPROT_ALIGN(
-        ch_annotation.reference,
-        MINIPROT_INDEX.out.index.map { meta, index -> tuple(meta, index) }
+        ch_annotation.reference
+            .join(MINIPROT_INDEX.out.index)
     )
 
     // Turns miniprot output to .fasta format so that it works both with microbeannoter and eggnogmapper
@@ -176,21 +180,32 @@ workflow MODEL_CREATION {
     )
 
     MICROBEANNOTER_DOWNLOADER(
-        params.microbe_annoter_db,
+        params.microbe_annoter_search,
         params.microbe_annoter_light
     )
+
+    ch_miniprot_gff.gffread_fasta
+        .branch { meta, faa ->
+            eggnog : meta.func_ann == 'eggnog'
+            default: meta.func_ann != 'eggnog'
+        }
+        .set { ch_miniprot_by_annoter }
     
     MICROBEANNOTER_ANNOTER(
-        ch_miniprot_gff.gffread_fasta,
-        MICROBEANNOTER_DOWNLOADER.out.db
+        ch_miniprot_by_annoter.default,
+        MICROBEANNOTER_DOWNLOADER.out.db,
         params.microbe_annoter_search
     )
+
+    // default ref_in ouput channel
+    ch_mini_microbe_output = ch_miniprot_by_annoter.default
+        .join(MICROBEANNOTER_ANNOTER.out.annotations)
 
     //
     // EGGNOG path
 
     PRODIGAL(
-        ch_ab_initio.pro,
+        ch_ab_pro.eggnog,
         'gff'
     )
     GUNZIP_PRODIGAL_FAA(PRODIGAL.out.amino_acid_fasta)
@@ -204,23 +219,18 @@ workflow MODEL_CREATION {
         file(params.eggnog_db)
     )
 
-    // Output channels
-    ch_func_annot = Channel.empty()
-
-    ch_complete_annot = ch_genemark_annot
-        .mix(GUNZIP_PRODIGAL_FAA.out.gunzip)
-        .mix(BAKTA.out.faa)
-        .mix(ch_miniprot_faa)
-
-    ch_complete_func_annot = 
+    // eggnog output channel
+    ch_eggnog_output = ch_eggnog_input
+        .join(EGGNOGMAPPER.out.annotations)
 
     // 
     // WORKFLOW : Database building & ID conversions
     //
 
     DATABASE_BUILDING(
-        ch_complete_annot,
-        ch_complete_func_annot
+        ch_bakta_mc_ouput,
+        ch_mini_microbe_output,
+        ch_eggnog_output 
     )
 
     //
@@ -228,8 +238,7 @@ workflow MODEL_CREATION {
     //
 
     MODEL_BUILDING(
-        WEB_REQUESTS.out.fixed_db
-            .join(WEB_REQUESTS.out.go_terms)
+        DATABASE_BUILDING.out.final_db
     )
 
     //
