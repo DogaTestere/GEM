@@ -1,0 +1,12 @@
+name: thermo_bounds
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24,<2.0.0     # Force NumPy 1.x to avoid deprecation crashes
+  - pandas<2.0.0            # Prevent TypeError: Query must be a string
+  - sqlalchemy<2.0.0        # Ensure compatibility with equilibrator-cache
+  - equilibrator-api
+  - pint>=0.23              # Ensure modern unit handling
+  - uncertainties           # Explicitly include the math backend
