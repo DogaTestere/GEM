@@ -8,8 +8,7 @@ process MINIPROT_ALIGN {
         'quay.io/biocontainers/miniprot:0.11--he4a0461_2' }"
 
     input:
-    tuple val(meta), path(pep)
-    tuple val(meta2), path(ref)
+    tuple val(meta), path(query), path(index)
 
     output:
     tuple val(meta), path("*.paf"), optional: true, emit: paf
@@ -27,8 +26,8 @@ process MINIPROT_ALIGN {
     miniprot \\
         $args \\
         -t $task.cpus \\
-        ${ref} \\
-        ${pep} \\
+        ${index} \\
+        ${query} \\
         > ${prefix}.${extension}
     """
 
